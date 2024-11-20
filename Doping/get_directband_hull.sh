@@ -1,0 +1,2 @@
+#!/bin/bash
+input="./Direct_dir" ; while IFS= read -r i ; do at_ratio="$( echo "scale=6; $(sed -n 7p $i/Relax/POSCAR | awk '{printf $2}') / $( expr $(sed -n 7p $i/Relax/POSCAR | awk '{printf $1}') + $(sed -n 7p $i/Relax/POSCAR | awk '{printf $2}') ) " | bc -l )" e_final="$( echo "scale=6; $(grep "free  energy   TOTEN  =" $i/Relax/OUTCAR | tail -1 | awk '{printf "%.6f", $5 }') / $(grep "NIONS =" $i/Relax/OUTCAR | awk '{printf $12}' ) " | bc -l )" ; echo $i $at_ratio $e_final ; done < "$input" > direct_hull_energy.dat
