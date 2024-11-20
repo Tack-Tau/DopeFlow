@@ -164,11 +164,13 @@ structure_directory/
 [Rest of the README remains the same...]
 
 ## Script Dependencies
-- VASPKIT
-- Phonopy
+- [AFLOW](https://aflowlib.org/)
+- [VASPKIT](https://vaspkit.com/index.html)
+- [Phonopy](https://phonopy.github.io/phonopy/)
 
 ## Environment Setup
 Ensure these environment variables are set:
+- `$AFLOW_HOME`: Path to AFLOW executable
 - `$VASPKIT_HOME`: Path to VASPKIT executable
 - `$PHONOPY_HOME`: Path to Phonopy executable
 
