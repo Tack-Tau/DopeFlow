@@ -1,0 +1,38 @@
+cff-version: 1.2.0
+title: "DopeFlow: DFT Calculation Workflow for Atomic Substitution Problem"
+message: "If you use this software, please cite it using these metadata."
+type: software
+authors:
+  - given-names: Shuo
+    family-names: Tao
+    orcid: https://orcid.org/0000-0003-2539-9305
+    affiliation: "Physics Department, Rutgers University-Newark"
+date-released: "2024"
+version: "0.0.1"
+repository-code: "https://github.com/Tack-Tau/DopeFlow"
+license: MIT
+abstract: >-
+  A collection of scripts for managing VASP calculations on SLURM-based cluster systems. 
+  Includes tools for sequential job submission, optical calculations, and phonon calculations 
+  with job monitoring and error checking capabilities.
+keywords:
+  - vasp
+  - computational-materials
+  - high-throughput-computing
+  - slurm
+  - job-scheduling
+  - phonon-calculations
+  - optical-properties
+references:
+  - type: software
+    title: "VASP"
+    url: "https://www.vasp.at/"
+  - type: software
+    title: "AFLOW"
+    url: "https://aflowlib.org/"
+  - type: software
+    title: "VASPKIT"
+    url: "https://vaspkit.com/"
+  - type: software
+    title: "Phonopy"
+    url: "https://phonopy.github.io/phonopy/" 

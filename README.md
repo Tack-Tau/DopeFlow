@@ -1,4 +1,4 @@
-# VASP Job Submission Scripts
+# DopeFlow: DFT Calculation Workflow for Atomic Substitution Problem
 
 This repository contains scripts for managing VASP calculations on a SLURM-based cluster system.
 
@@ -25,15 +25,20 @@ where `<calc_type>` can be:
 - `../aflow_sym/uniq_poscar_list`: List of structures to process
 - `diverge_structs`: (optional) List of structures to skip
 
-### 2. redo_optics.sh
+### 2. redo_optics.sh/restart_optics.sh
 
-A script for managing optical calculations (SC → DIAG → GW0 → BSE) with automatic error checking and resubmission.
+Scripts for managing optical calculations (SC → DIAG → GW0 → BSE) with automatic error checking and resubmission.
 
 #### Usage
 
+For normal execution with error checking:
 ```bash
-chmod +x redo_optics.sh
-nohup ./redo_optics.sh > nohup.out 2>&1 &
+nohup ./redo_optics.sh > redo_optics.log 2>&1 &
+```
+
+For forced restart of all calculations:
+```bash
+nohup ./restart_optics.sh > restart_optics.log 2>&1 &
 ```
 
 #### Required Files
@@ -48,23 +53,47 @@ nohup ./redo_optics.sh > nohup.out 2>&1 &
   - `sbp_DIAG.sh`
   - `sbp_GW0.sh`
   - `sbp_BSE.sh`
+- `POTCAR`: VASP pseudopotential file for Relax/SC/DOS/Band/PHON calculations
+- `POTCAR_GW`: VASP pseudopotential file for Optical calculations
 
 #### Directory Structure
 
 ```bash
 structure_directory/
+├── Relax/
+├── SC/
+├── DOS/
+├── Band/
+├── PHON/
 ├── Optics/
+│ ├── SC/
 │ ├── DIAG/
 │ ├── GW0/
 │ └── BSE/
-├── Relax/
-└── SC/
 ```
 
 #### Output Logs
+For redo_optics.sh:
 - `optical_jobs.log`: Detailed job submission information
 - `job_<calc_type>.log`: Job counting logs for each calculation type
-- `nohup.out`: General script output
+
+For restart_optics.sh:
+- `restart_optical_jobs.log`: Detailed job submission information for restarts
+- `job_<calc_type>_restart.log`: Job counting logs for restarted calculations
+
+#### Features
+
+redo_optics.sh:
+- Automatic error detection and job resubmission
+- Sequential dependency handling
+- Detailed logging of job submissions
+- Limits concurrent jobs to 60
+
+restart_optics.sh:
+- Forces restart of all calculations regardless of previous status
+- Maintains same workflow and dependencies
+- Uses separate log files to avoid confusion with original runs
+- Limits concurrent jobs to 60
 
 ## Features
 
@@ -92,6 +121,8 @@ structure_directory/
 2. Directory permissions - ensure write access in all directories
 3. SLURM queue limits - script will wait if queue is full
 4. Failed calculations - check individual VASP output files for errors
+5. Missing vasprun.xml - script will detect and resubmit affected calculations
+6. Failed phonon calculations - use get_err_phon.sh to generate resubmission script
 
 ## Notes
 - Both scripts assume SLURM job scheduler
@@ -161,12 +192,79 @@ structure_directory/
 3. Use `job_PHON.log` to track submission progress
 4. Check VASPKIT output for primitive cell generation
 
-[Rest of the README remains the same...]
+### 4. Post-Processing Scripts
+
+#### post-proc_phonon.sh
+A script for post-processing phonon calculations with automatic error detection and data generation.
+
+#### Usage
+```bash
+sbatch phonon-pp-job.sh
+```
+
+#### Features
+- Automatic error detection in SLURM output files
+- Generates FORCE_SETS using phonopy
+- Creates phonon band plots and raw data files
+- Handles LaTeX formatting for band labels
+- Detailed logging with configurable verbosity
+
+#### Required Files
+- `phonon_list`: List of structures to process
+- Supporting scripts:
+  - `convert_kpath.sh`
+  - `extract_band_conf.sh`
+  - `preprocess_high_symmetry_points.sh`
+
+#### band_gap-pp.sh
+A script for analyzing and categorizing band structures based on their electronic properties.
+
+#### Usage
+```bash
+./band_gap-pp.sh
+```
+
+#### Features
+- Automatically categorizes structures as Direct, Indirect, or Metallic
+- Uses VASPKIT for band structure analysis
+- Error detection in SLURM output files
+- Generates categorized lists of structures
+
+#### Output Files
+- `Direct_dir`: List of structures with direct band gaps
+- `Indirect_dir`: List of structures with indirect band gaps
+- `Metallic_dir`: List of structures with metallic/semimetallic character
+
+#### get_err_phon.sh
+A utility script for handling failed phonon calculations.
+
+#### Usage
+```bash
+./get_err_phon.sh
+```
+
+#### Features
+- Analyzes phonon post-processing logs for errors
+- Generates resubmission script for failed calculations
+- Handles missing or corrupted vasprun.xml files
+- Automatic cleanup and job resubmission
 
 ## Script Dependencies
 - [AFLOW](https://aflowlib.org/)
 - [VASPKIT](https://vaspkit.com/index.html)
 - [Phonopy](https://phonopy.github.io/phonopy/)
+
+### Python Dependencies
+Depending on which doping script you use, you'll need different Python packages:
+
+For `aflow_sym/Doping.py`:
+- [ASE](https://wiki.fysik.dtu.dk/ase/index.html)
+- [libfp](https://github.com/Rutgers-ZRG/libfp)
+
+For `aflow_sym/subgroup_doping.py`:
+- [ASE](https://wiki.fysik.dtu.dk/ase/index.html)
+- [Pymatgen](https://pymatgen.org/)
+- [PyXtal](https://pyxtal.readthedocs.io/en/latest/index.html)
 
 ## Environment Setup
 Ensure these environment variables are set:

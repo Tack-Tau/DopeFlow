@@ -33,9 +33,11 @@ submit_jobs() {
             if [ $sq_results -lt 60 ]; then
                 case $calc_type in
                     "SC")
-                        cd "$line/$calc_type"
+                        mkdir -p "$line/Optics/$calc_type"
+                        cd "$line/Optics/$calc_type"
                         rm !("POSCAR"|"POTCAR"|"INCAR"|"sbp.sh") 2> /dev/null
-                        cp ../Relax/CONTCAR ./POSCAR
+                        cp ../../Relax/CONTCAR ./POSCAR
+                        cp $calc_dir/POTCAR_GW ./POTCAR
                         cp $calc_dir/INCAR_SC ./INCAR
                         cp $calc_dir/sbp_SC.sh ./sbp.sh
                         ;;
@@ -44,6 +46,7 @@ submit_jobs() {
                         cd "$line/Optics/$calc_type"
                         rm !("POSCAR"|"POTCAR"|"INCAR"|"sbp.sh") 2> /dev/null
                         cp ../../Relax/CONTCAR ./POSCAR
+                        cp $calc_dir/POTCAR_GW ./POTCAR
                         cp ../../SC/WAVECAR ./
                         cp $calc_dir/INCAR_DIAG ./INCAR
                         cp $calc_dir/sbp_DIAG.sh ./sbp.sh
@@ -53,6 +56,7 @@ submit_jobs() {
                         cd "$line/Optics/$calc_type"
                         rm !("POSCAR"|"POTCAR"|"INCAR"|"sbp.sh") 2> /dev/null
                         cp ../../Relax/CONTCAR ./POSCAR
+                        cp $calc_dir/POTCAR_GW ./POTCAR
                         cp ../DIAG/WAVECAR ./
                         cp ../DIAG/WAVEDER ./
                         cp $calc_dir/INCAR_GW0 ./INCAR
@@ -63,6 +67,7 @@ submit_jobs() {
                         cd "$line/Optics/$calc_type"
                         rm !("POSCAR"|"POTCAR"|"INCAR"|"sbp.sh") 2> /dev/null
                         cp ../../Relax/CONTCAR ./POSCAR
+                        cp $calc_dir/POTCAR_GW ./POTCAR
                         cp ../GW0/*.tmp ./
                         cp ../GW0/WAVECAR ./
                         cp ../DIAG/WAVEDER ./
