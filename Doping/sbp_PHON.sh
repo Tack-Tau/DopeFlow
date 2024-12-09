@@ -1,6 +1,6 @@
 #!/bin/sh
 #SBATCH --partition=main
-#SBATCH --job-name=PHONON
+#SBATCH --job-name=PHON
 #SBATCH --nodes=1
 #SBATCH --ntasks=32
 #SBATCH --mem=190GB
