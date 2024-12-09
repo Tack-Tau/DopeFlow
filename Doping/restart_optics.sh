@@ -3,6 +3,7 @@ shopt -s extglob
 
 calc_dir="$PWD"
 log_file="$calc_dir/restart_optical_jobs.log"
+error_log_file="$calc_dir/optics_error.log"
 
 # Function to submit jobs with monitoring
 submit_jobs() {
@@ -15,13 +16,13 @@ submit_jobs() {
     fi
 
     while IFS= read -r line; do
-        # Check current number of jobs in queue
-        sq_results=$(squeue -u $USER | sed 1d | wc -l)
+        # Check current number of nodes in use
+        sq_results=$(squeue -u $USER -o "%D" | awk '{sum+=$1} END {print sum}')
         
-        # Wait if queue is full
+        # Wait if node usage is full
         while [ $sq_results -ge 60 ]; do
             sleep 30
-            sq_results=$(squeue -u $USER | sed 1d | wc -l)
+            sq_results=$(squeue -u $USER -o "%D" | awk '{sum+=$1} END {print sum}')
         done
 
         case $calc_type in
@@ -78,21 +79,21 @@ submit_jobs() {
         echo "Submitted batch job ${slurm_job_id}" >> "$log_file"
         echo "----------------------------------------" >> "$log_file"
 
-        echo "Job $job_count has been submitted" >> $calc_dir/job_${calc_type}_restart.log
-        job_count=$((job_count+1))
+        # Check job completion and errors
+        while true; do
+            if [ -f "$line/$calc_type/slurm-$slurm_job_id.out" ]; then
+                if grep -q -E "JOB|CANCELLED|error|failed" "$line/$calc_type/slurm-$slurm_job_id.out"; then
+                    echo "Error in ${calc_type} job for structure directory: ${line}" >> "$error_log_file"
+                    break
+                elif grep -q "COMPLETED" "$line/$calc_type/slurm-$slurm_job_id.out"; then
+                    break
+                fi
+            fi
+            sleep 30
+        done
+
         cd $calc_dir || exit
     done < "$calc_dir/Direct_dir"
-
-    # Wait for all jobs of this type to complete
-    echo "Waiting for all ${calc_type} jobs to complete..."
-    while true; do
-        active_jobs=$(squeue -u $USER | grep "${calc_type}" | wc -l)
-        if [ $active_jobs -eq 0 ]; then
-            echo "All ${calc_type} jobs completed."
-            break
-        fi
-        sleep 30
-    done
 }
 
 # Initialize log file with timestamp
