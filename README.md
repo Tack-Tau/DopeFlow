@@ -269,7 +269,7 @@ For using Fingerprint energy as symmetry bias: \
 - [ASE](https://wiki.fysik.dtu.dk/ase/index.html)
 - [libfp](https://github.com/Rutgers-ZRG/libfp)
 
-For explicitly using group-subgroup splitting:
+For explicitly using group-subgroup splitting: \
 **Example:** `aflow_sym/subgroup_doping.py`
 - [ASE](https://wiki.fysik.dtu.dk/ase/index.html)
 - [Pymatgen](https://pymatgen.org/)
