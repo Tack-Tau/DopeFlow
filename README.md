@@ -110,12 +110,6 @@ restart_optics.sh:
 - Detailed logging of job submissions
 - Limits concurrent jobs to 60
 
-## Tips
-1. Always test with a small set of structures first
-2. Monitor the log files for progress and errors
-3. Use `squeue -u $USER` to check running jobs
-4. Check `nohup.out` for script execution details
-
 ## Common Issues
 1. Missing required files - ensure all INCAR and submission scripts are present
 2. Directory permissions - ensure write access in all directories
@@ -233,7 +227,7 @@ A script for analyzing and categorizing band structures based on their electroni
 #### Output Files
 - `Direct_dir`: List of structures with direct band gaps
 - `Indirect_dir`: List of structures with indirect band gaps
-- `Metallic_dir`: List of structures with metallic/semimetallic character
+- `Metallic_dir`: List of structures with metallic/semimetallic band gaps
 
 #### get_err_phon.sh
 A utility script for handling failed phonon calculations.
@@ -257,11 +251,17 @@ A utility script for handling failed phonon calculations.
 ### Python Dependencies
 Depending on which doping script you use, you'll need different Python packages:
 
-For `aflow_sym/Doping.py`:
+For general substitution **WITHOUT** symmetry bias:
+***Example:*** `aflow_sym/rnd_SiGe_doping.py` or `aflow_sym/NaSiGe_doping.py`
+- [ASE](https://wiki.fysik.dtu.dk/ase/index.html)
+
+For using Fingerprint energy as symmetry bias `aflow_sym/Doping.py`:
+***Example:*** `aflow_sym/Doping.py`
 - [ASE](https://wiki.fysik.dtu.dk/ase/index.html)
 - [libfp](https://github.com/Rutgers-ZRG/libfp)
 
-For `aflow_sym/subgroup_doping.py`:
+For explicitly using group-subgroup splitting:
+***Example:*** `aflow_sym/subgroup_doping.py`
 - [ASE](https://wiki.fysik.dtu.dk/ase/index.html)
 - [Pymatgen](https://pymatgen.org/)
 - [PyXtal](https://pyxtal.readthedocs.io/en/latest/index.html)
