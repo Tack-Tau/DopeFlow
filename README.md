@@ -18,6 +18,15 @@ where `<calc_type>` can be:
 - `Band`: Band structure calculation
 - `DOS`: Density of states calculation
 
+#### Directory Structure
+```bash
+structure_directory/
+├── Relax/
+├── SC/
+├── DOS/
+└── Band/
+```
+
 #### Required Files
 - `INCAR_<calc_type>`: INCAR file for each calculation type
 - `sbp_<calc_type>.sh`: SLURM submission script for each calculation type
@@ -53,18 +62,18 @@ nohup ./restart_optics.sh > restart_optics.log 2>&1 &
   - `sbp_DIAG.sh`
   - `sbp_GW0.sh`
   - `sbp_BSE.sh`
-- `POTCAR`: VASP pseudopotential file for Relax/SC/DOS/Band/PHON calculations
-- `POTCAR_GW`: VASP pseudopotential file for Optical calculations
+- `POTCAR_GW`: VASP GW pseudopotential file
+
+#### `<calc_type>` can be:
+- `SC`: DFT groundstate calculation
+- `DIAG`: DFT "virtual" orbitals (empty states)
+- `GW0`: RPA quasiparticles with single-shot GW
+- `BSE`: BSE calculation
 
 #### Directory Structure
 
 ```bash
 structure_directory/
-├── Relax/
-├── SC/
-├── DOS/
-├── Band/
-├── PHON/
 ├── Optics/
 │ ├── SC/
 │ ├── DIAG/
@@ -87,13 +96,13 @@ redo_optics.sh:
 - Automatic error detection and job resubmission
 - Sequential dependency handling
 - Detailed logging of job submissions
-- Limits concurrent jobs to 60
+- Limits concurrent jobs up to 60 computational nodes
 
 restart_optics.sh:
 - Forces restart of all calculations regardless of previous status
 - Maintains same workflow and dependencies
 - Uses separate log files to avoid confusion with original runs
-- Limits concurrent jobs to 60
+- Limits concurrent jobs up to 60 computational nodes
 
 ## Features
 
@@ -103,7 +112,7 @@ restart_optics.sh:
 - Handles failed calculations
 - Supports structure skipping via `diverge_structs`
 
-### redo_optics.sh
+### redo_optics.sh/restart_optics.sh
 - Automatic directory creation and management
 - Sequential dependency handling (SC → DIAG → GW0 → BSE)
 - Automatic error detection and job resubmission
@@ -152,7 +161,7 @@ structure_directory/
 ├── Relax/
 │ └── CONTCAR
 └── PHON/
-├── POSCAR- # Generated supercell POSCARs
+├── POSCAR-*
 ├── INCAR
 ├── POTCAR
 └── sbp.sh
@@ -251,17 +260,17 @@ A utility script for handling failed phonon calculations.
 ### Python Dependencies
 Depending on which doping script you use, you'll need different Python packages:
 
-For general substitution **WITHOUT** symmetry bias:
-***Example:*** `aflow_sym/rnd_SiGe_doping.py` or `aflow_sym/NaSiGe_doping.py`
+For general substitution **WITHOUT** symmetry bias: \
+**Example:** `aflow_sym/rnd_SiGe_doping.py` or `aflow_sym/NaSiGe_doping.py`
 - [ASE](https://wiki.fysik.dtu.dk/ase/index.html)
 
-For using Fingerprint energy as symmetry bias `aflow_sym/Doping.py`:
-***Example:*** `aflow_sym/Doping.py`
+For using Fingerprint energy as symmetry bias: \
+**Example:** `aflow_sym/Doping.py`
 - [ASE](https://wiki.fysik.dtu.dk/ase/index.html)
 - [libfp](https://github.com/Rutgers-ZRG/libfp)
 
 For explicitly using group-subgroup splitting:
-***Example:*** `aflow_sym/subgroup_doping.py`
+**Example:** `aflow_sym/subgroup_doping.py`
 - [ASE](https://wiki.fysik.dtu.dk/ase/index.html)
 - [Pymatgen](https://pymatgen.org/)
 - [PyXtal](https://pyxtal.readthedocs.io/en/latest/index.html)
