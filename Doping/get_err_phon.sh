@@ -12,48 +12,36 @@ echo "#!/bin/bash" > "$resubmit_script"
 echo "shopt -s extglob" >> "$resubmit_script"
 
 # Parse the log file for errors
-while read -r line; do
+while IFS= read -r line; do
     if [[ "$line" =~ ^Error: ]]; then
         # Extract the structure directory and phonon directories with issues
-        if [[ "$line" =~ Slurm\ errors\ detected\ in\ the\ following\ phonon\ directories\ for\ ([0-9]+): ]]; then
+        if [[ "$line" =~ Slurm\ errors\ detected\ in\ the\ following\ phonon\ directories\ for\ ([0-9]+):\ ([0-9]+) ]]; then
             struct_dir="${BASH_REMATCH[1]}"
-            echo "Detected Slurm errors in structure directory: $struct_dir"
-            phonon_dirs=""
-            while read -r error_line; do
-                if [[ "$error_line" =~ ^Skipping ]]; then
-                    break
-                fi
-                phonon_dirs+="$error_line "
-            done
+            phonon_dir="${BASH_REMATCH[2]}"
+            echo "Detected Slurm errors in structure directory: $struct_dir, phonon directory: $phonon_dir"
 
-            # Prepare resubmission commands for each problematic phonon directory
-            for phonon_dir in $phonon_dirs; do
-                target_dir="$calc_dir/$struct_dir/PHON/$phonon_dir"
+            # Prepare resubmission command
+            echo "
+            mkdir -p $calc_dir/$struct_dir/PHON/$phonon_dir
+            cp $calc_dir/$struct_dir/PHON/POSCAR-$phonon_dir $calc_dir/$struct_dir/PHON/$phonon_dir/POSCAR
+            cp $calc_dir/$struct_dir/PHON/INCAR $calc_dir/$struct_dir/PHON/POTCAR $calc_dir/$struct_dir/PHON/sbp.sh $calc_dir/$struct_dir/PHON/$phonon_dir/
+            cd $calc_dir/$struct_dir/PHON/$phonon_dir || exit
+            rm !(\"POSCAR\"|\"POTCAR\"|\"INCAR\"|\"sbp.sh\")
+            sbatch sbp.sh
+            cd $calc_dir/$struct_dir/PHON/ || exit
+            " >> "$resubmit_script"
 
-                echo "
-                mkdir -p $target_dir
-                cp $calc_dir/$struct_dir/PHON/POSCAR-$phonon_dir $target_dir/POSCAR
-                cp $calc_dir/$struct_dir/PHON/INCAR $calc_dir/$struct_dir/PHON/POTCAR $calc_dir/$struct_dir/PHON/sbp.sh $target_dir/
-                cd $target_dir || exit
-                rm !(\"POSCAR\"|\"POTCAR\"|\"INCAR\"|\"sbp.sh\")
-                sbatch sbp.sh
-                cd $calc_dir/$struct_dir/PHON/ || exit
-                " >> "$resubmit_script"
-            done
-
-        elif [[ "$line" =~ Missing\ or\ empty\ vasprun.xml\ in\ phonon\ directory\ ([0-9]+)\ for\ ([0-9]+)\. ]]; then
+        elif [[ "$line" =~ Missing\ or\ empty\ vasprun.xml\ in\ phonon\ directory\ ([0-9]+)\ for\ ([0-9]+) ]]; then
             phonon_dir="${BASH_REMATCH[1]}"
             struct_dir="${BASH_REMATCH[2]}"
-            target_dir="$calc_dir/$struct_dir/PHON/$phonon_dir"
-
             echo "Detected missing or empty vasprun.xml in structure directory: $struct_dir, phonon directory: $phonon_dir"
 
             # Prepare resubmission command
             echo "
-            mkdir -p $target_dir
-            cp $calc_dir/$struct_dir/PHON/POSCAR-$phonon_dir $target_dir/POSCAR
-            cp $calc_dir/$struct_dir/PHON/INCAR $calc_dir/$struct_dir/PHON/POTCAR $calc_dir/$struct_dir/PHON/sbp.sh $target_dir/
-            cd $target_dir || exit
+            mkdir -p $calc_dir/$struct_dir/PHON/$phonon_dir
+            cp $calc_dir/$struct_dir/PHON/POSCAR-$phonon_dir $calc_dir/$struct_dir/PHON/$phonon_dir/POSCAR
+            cp $calc_dir/$struct_dir/PHON/INCAR $calc_dir/$struct_dir/PHON/POTCAR $calc_dir/$struct_dir/PHON/sbp.sh $calc_dir/$struct_dir/PHON/$phonon_dir/
+            cd $calc_dir/$struct_dir/PHON/$phonon_dir || exit
             rm !(\"POSCAR\"|\"POTCAR\"|\"INCAR\"|\"sbp.sh\")
             sbatch sbp.sh
             cd $calc_dir/$struct_dir/PHON/ || exit
