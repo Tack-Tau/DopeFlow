@@ -229,11 +229,11 @@ submit_all_SC() {
         if [ $? -eq 0 ]; then
             new_job_id=$(echo $slurm_output | awk '{print $4}')
             job_ids[$struct_dir]=$new_job_id
-            calc_stage[$struct_dir]="DIAG"
-            echo "Submitted DIAG job for $struct_dir with ID $new_job_id" >> "$log_file"
+            calc_stage[$struct_dir]="SC"
+            echo "Submitted SC job for $struct_dir with ID $new_job_id" >> "$log_file"
             all_complete=0
         else
-            echo "Failed to submit DIAG job for $struct_dir" >> "$error_log_file"
+            echo "Failed to submit SC job for $struct_dir" >> "$error_log_file"
         fi
         cd "$calc_dir" || exit
     done < "$calc_dir/Direct_dir"
@@ -245,16 +245,14 @@ submit_all_SC() {
         
         for struct_dir in "${!calc_stage[@]}"; do
             current_job_id=${job_ids[$struct_dir]}
+            current_stage=${calc_stage[$struct_dir]}
             
-            case ${calc_stage[$struct_dir]} in
+            case $current_stage in
                 "SC")
                     if job_completed_successfully "$current_job_id" "$struct_dir" "SC"; then
                         echo "SC calculation completed for $struct_dir, preparing DIAG calculation" >> "$log_file"
-                        
-                        # Prepare and submit DIAG calculation
                         if prepare_directory "DIAG" "$struct_dir"; then
                             cd "$struct_dir/Optics/DIAG" || continue
-                            
                             slurm_output=$(sbatch sbp.sh)
                             if [ $? -eq 0 ]; then
                                 new_job_id=$(echo $slurm_output | awk '{print $4}')
@@ -262,8 +260,6 @@ submit_all_SC() {
                                 calc_stage[$struct_dir]="DIAG"
                                 echo "Submitted DIAG job for $struct_dir with ID $new_job_id" >> "$log_file"
                                 all_complete=0
-                            else
-                                echo "Failed to submit DIAG job for $struct_dir" >> "$error_log_file"
                             fi
                             cd "$calc_dir" || exit
                         fi
@@ -273,30 +269,44 @@ submit_all_SC() {
                     ;;
                 "DIAG")
                     if job_completed_successfully "$current_job_id" "$struct_dir" "DIAG"; then
-                        echo "DIAG calculation completed for $struct_dir" >> "$log_file"
-                        if submit_and_monitor "$struct_dir" "GW0"; then
-                            calc_stage[$struct_dir]="GW0"
-                            job_ids[$struct_dir]=$job_id
-                            all_complete=0
+                        echo "DIAG calculation completed for $struct_dir, preparing GW0 calculation" >> "$log_file"
+                        if prepare_directory "GW0" "$struct_dir"; then
+                            cd "$struct_dir/Optics/GW0" || continue
+                            slurm_output=$(sbatch sbp.sh)
+                            if [ $? -eq 0 ]; then
+                                new_job_id=$(echo $slurm_output | awk '{print $4}')
+                                job_ids[$struct_dir]=$new_job_id
+                                calc_stage[$struct_dir]="GW0"
+                                echo "Submitted GW0 job for $struct_dir with ID $new_job_id" >> "$log_file"
+                                all_complete=0
+                            fi
+                            cd "$calc_dir" || exit
                         fi
                     else
                         all_complete=0
                     fi
                     ;;
                 "GW0")
-                    if job_completed_successfully "${job_ids[$struct_dir]}" "$struct_dir" "GW0"; then
-                        echo "GW0 calculation completed for $struct_dir" >> "$log_file"
-                        if submit_and_monitor "$struct_dir" "BSE"; then
-                            calc_stage[$struct_dir]="BSE"
-                            job_ids[$struct_dir]=$job_id
-                            all_complete=0
+                    if job_completed_successfully "$current_job_id" "$struct_dir" "GW0"; then
+                        echo "GW0 calculation completed for $struct_dir, preparing BSE calculation" >> "$log_file"
+                        if prepare_directory "BSE" "$struct_dir"; then
+                            cd "$struct_dir/Optics/BSE" || continue
+                            slurm_output=$(sbatch sbp.sh)
+                            if [ $? -eq 0 ]; then
+                                new_job_id=$(echo $slurm_output | awk '{print $4}')
+                                job_ids[$struct_dir]=$new_job_id
+                                calc_stage[$struct_dir]="BSE"
+                                echo "Submitted BSE job for $struct_dir with ID $new_job_id" >> "$log_file"
+                                all_complete=0
+                            fi
+                            cd "$calc_dir" || exit
                         fi
                     else
                         all_complete=0
                     fi
                     ;;
                 "BSE")
-                    if job_completed_successfully "${job_ids[$struct_dir]}" "$struct_dir" "BSE"; then
+                    if job_completed_successfully "$current_job_id" "$struct_dir" "BSE"; then
                         echo "BSE calculation completed for $struct_dir" >> "$log_file"
                         calc_stage[$struct_dir]="COMPLETE"
                     else
@@ -318,9 +328,6 @@ submit_all_SC() {
         
         sleep 300
     done
-
-    # Clean up timestamp file at the end
-    rm -f "$status_timestamp_file"
 }
 
 # Initialize log files

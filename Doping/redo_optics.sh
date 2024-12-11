@@ -159,18 +159,22 @@ process_failed_calcs() {
                 need_diag[$struct_dir]=1
                 need_gw0[$struct_dir]=1
                 need_bse[$struct_dir]=1
+                calc_stage[$struct_dir]="SC"
                 ;;
             "DIAG")
                 need_diag[$struct_dir]=1
                 need_gw0[$struct_dir]=1
                 need_bse[$struct_dir]=1
+                calc_stage[$struct_dir]="DIAG"
                 ;;
             "GW0")
                 need_gw0[$struct_dir]=1
                 need_bse[$struct_dir]=1
+                calc_stage[$struct_dir]="GW0"
                 ;;
             "BSE")
                 need_bse[$struct_dir]=1
+                calc_stage[$struct_dir]="BSE"
                 ;;
         esac
     done < "$error_log_file"
@@ -212,7 +216,7 @@ process_failed_calcs() {
             echo "Starting calculations from BSE for structure $struct_dir" >> "$error_log_file"
             if submit_and_monitor "$struct_dir" "BSE"; then
                 job_ids[$struct_dir]=$job_id
-                calc_stage[$struct_dir]="BSE"
+                calc_stage[$struct_dir]="COMPLETE"
             fi
         fi
     done
