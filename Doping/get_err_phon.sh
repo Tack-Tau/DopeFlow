@@ -23,10 +23,10 @@ while IFS= read -r line; do
             # Prepare resubmission command
             echo "
             mkdir -p $calc_dir/$struct_dir/PHON/$phonon_dir
-            cp $calc_dir/$struct_dir/PHON/POSCAR-$phonon_dir $calc_dir/$struct_dir/PHON/$phonon_dir/POSCAR
-            cp $calc_dir/$struct_dir/PHON/INCAR $calc_dir/$struct_dir/PHON/POTCAR $calc_dir/$struct_dir/PHON/sbp.sh $calc_dir/$struct_dir/PHON/$phonon_dir/
             cd $calc_dir/$struct_dir/PHON/$phonon_dir || exit
-            rm !(\"POSCAR\"|\"POTCAR\"|\"INCAR\"|\"sbp.sh\")
+            rm !("POSCAR"|"POTCAR"|"INCAR"|"sbp.sh") 2> /dev/null
+            cp $calc_dir/$struct_dir/PHON/POSCAR-$phonon_dir $calc_dir/$struct_dir/PHON/$phonon_dir/POSCAR
+            cp $calc_dir/$struct_dir/PHON/{INCAR,POTCAR,sbp.sh} $calc_dir/$struct_dir/PHON/$phonon_dir/
             sbatch sbp.sh
             cd $calc_dir/$struct_dir/PHON/ || exit
             " >> "$resubmit_script"
@@ -39,10 +39,10 @@ while IFS= read -r line; do
             # Prepare resubmission command
             echo "
             mkdir -p $calc_dir/$struct_dir/PHON/$phonon_dir
-            cp $calc_dir/$struct_dir/PHON/POSCAR-$phonon_dir $calc_dir/$struct_dir/PHON/$phonon_dir/POSCAR
-            cp $calc_dir/$struct_dir/PHON/INCAR $calc_dir/$struct_dir/PHON/POTCAR $calc_dir/$struct_dir/PHON/sbp.sh $calc_dir/$struct_dir/PHON/$phonon_dir/
             cd $calc_dir/$struct_dir/PHON/$phonon_dir || exit
-            rm !(\"POSCAR\"|\"POTCAR\"|\"INCAR\"|\"sbp.sh\")
+            rm !("POSCAR"|"POTCAR"|"INCAR"|"sbp.sh") 2> /dev/null
+            cp $calc_dir/$struct_dir/PHON/POSCAR-$phonon_dir $calc_dir/$struct_dir/PHON/$phonon_dir/POSCAR
+            cp $calc_dir/$struct_dir/PHON/{INCAR,POTCAR,sbp.sh} $calc_dir/$struct_dir/PHON/$phonon_dir/
             sbatch sbp.sh
             cd $calc_dir/$struct_dir/PHON/ || exit
             " >> "$resubmit_script"
