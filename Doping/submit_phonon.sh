@@ -153,30 +153,42 @@ if [[ ! -z "$last_job_info" ]]; then
     last_submitted_struct_dir=$(echo "$last_job_info" | awk '{print $3}')
 fi
 
-# Preprocessing if the log file is not empty, skipping last submitted struct_dir
+# Preprocessing if the log file is not empty, only process the next unsubmitted struct_dir
 if [[ -s "$LOG_FILE" ]]; then
     skip_to_next_struct=false
+    next_struct=""
     for i in $(cat phonon_list); do
-        mkdir -p "$calc_dir/${i}/PHON"
-        # Skip the last submitted structure directory
+        # Find the next unsubmitted structure after the last submitted one
+        if [[ "$skip_to_next_struct" == true ]]; then
+            next_struct="$i"
+            break  # Exit loop after finding the next structure
+        fi
+        
+        # Mark when we've found the last submitted structure
         if [[ "$i" == "$last_submitted_struct_dir" ]]; then
             skip_to_next_struct=true
-            continue
-        fi
-
-        # Process remaining structure directories
-        if [[ "$skip_to_next_struct" == true ]]; then
-            echo "Processing structure directory: $i"
-            mkdir -p "$calc_dir/${i}/PHON"
-            cp "$calc_dir/${i}/Relax/CONTCAR" "$calc_dir/${i}/PHON/POSCAR"
-            cd "$calc_dir/${i}/PHON" || exit
-            vaspkit -task 602 1> /dev/null
-            cp POSCAR bk_POSCAR
-            cp PRIMCELL.vasp POSCAR
-            vaspkit -task 303 1> /dev/null
-            cd "$calc_dir" || exit
         fi
     done
+
+    # Only preprocess the next structure if found
+    if [[ ! -z "$next_struct" ]]; then
+        echo "Processing structure directory: $next_struct"
+        mkdir -p "$calc_dir/${next_struct}/PHON"
+        cp "$calc_dir/${next_struct}/Relax/CONTCAR" "$calc_dir/${next_struct}/PHON/POSCAR"
+        cd "$calc_dir/${next_struct}/PHON" || exit
+        vaspkit -task 602 1> /dev/null
+        cp POSCAR bk_POSCAR
+        cp PRIMCELL.vasp POSCAR
+        vaspkit -task 303 1> /dev/null
+        
+        # Copy necessary files and generate supercells
+        cp "$calc_dir/INCAR_PHON" INCAR
+        cp "$calc_dir/sbp_PHON.sh" sbp.sh
+        cp "$calc_dir/"{convert_kpath.sh,generate_supercell.sh,extract_band_conf.sh,preprocess_high_symmetry_points.sh} ./
+        bash generate_supercell.sh
+        
+        cd "$calc_dir" || exit
+    fi
 fi
 
 # Skip fully submitted structure directories before the last submitted one
