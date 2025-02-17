@@ -78,11 +78,6 @@ precheck_phonon_dir() {
     return 0
 }
 
-# Function to format Greek symbols in BAND_LABELS
-format_band_labels() {
-    sed -i 's/\\Gamma/\$\Gamma\$/g; s/\\Delta/\$\Delta\$/g; s/\\Sigma/\$\Sigma\$/g; s/\\Pi/\$\Pi\$/g' band.conf
-}
-
 # Process each structure directory in phonon_list
 for struct_dir in $(cat phonon_list); do
     log 0 "Starting post-processing for structure directory: $struct_dir"
@@ -113,13 +108,17 @@ for struct_dir in $(cat phonon_list); do
     log 1 "Running convert_kpath.sh and extract_band_conf.sh..."
     bash convert_kpath.sh 1> /dev/null && bash extract_band_conf.sh 1> /dev/null && \
 
-    # Format BAND_LABELS with LaTeX for Greek symbols
-    log 1 "Formatting BAND_LABELS for LaTeX..."
-    format_band_labels && \
-
     # Generate phonon band plot and YAML file
     log 1 "Generating phonon band plot..."
     phonopy -ps band.conf 1> /dev/null && \
+
+    # Create band plot with custom ylabel using matplotlib
+    log 1 "Creating band plot with custom settings..."
+    phonopy-bandplot band.yaml \
+                     --legacy \
+                     --xlabel "" \
+                     --ylabel "Frequency (THz)" \
+                     -o band.pdf && \
 
     # Create raw data file for the phonon band
     log 1 "Creating raw data file for phonon band..."

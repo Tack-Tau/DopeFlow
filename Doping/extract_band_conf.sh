@@ -48,7 +48,15 @@ echo "" >> "$BAND_CONF"
 # Write BAND_LABELS line
 echo -n "BAND_LABELS = " >> "$BAND_CONF"
 for label in "${high_symmetry_labels[@]}"; do
-    echo -n "$label " >> "$BAND_CONF"
+    if [[ "$label" == \* || \
+          "$label" =~ ^\\(Gamma|Delta|Sigma|Pi|Lambda|Omega|\
+alpha|beta|theta|phi|psi|Psi|Theta|Xi|\
+chi|mu|nu|tau|epsilon|varepsilon|\
+kappa|rho|zeta|eta)$ ]]; then
+        printf '$%s$ ' "$label" >> "$BAND_CONF"
+    else
+        printf '%s ' "$label" >> "$BAND_CONF"
+    fi
 done
 echo "" >> "$BAND_CONF"
 
