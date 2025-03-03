@@ -59,18 +59,16 @@ submit_in_batches() {
     fi
 
     # Check if resuming submission for the current structure directory
-    if [[ "$struct_dir" == "$last_submitted_struct_dir" && $last_submitted_phon_dir -lt $total_count ]]; then
-        # Find the index of the last submitted phonon directory in the list
-        while [[ $job_counter -lt $total_count && ${total_phon_dirs[$job_counter]} != "$last_submitted_phon_dir" ]]; do
-            ((job_counter++))
-        done
-        ((job_counter++))  # Start from the next phonon directory
-    elif [[ "$struct_dir" != "$last_submitted_struct_dir" || $last_submitted_phon_dir -eq $total_count ]]; then
-        # If fully completed, skip the directory
-        if [[ "$struct_dir" == "$last_submitted_struct_dir" && $last_submitted_phon_dir -eq $total_count ]]; then
-            echo "All phonon jobs already submitted for structure directory: $struct_dir. Skipping."
-            return
+    if [[ "$struct_dir" == "$last_submitted_struct_dir" ]]; then
+        # Compare as strings, not numbers
+        if [[ "$last_submitted_phon_dir" != "" ]]; then
+            # Find the index of the last submitted phonon directory in the list
+            while [[ $job_counter -lt $total_count && "${total_phon_dirs[$job_counter]}" != "$last_submitted_phon_dir" ]]; do
+                ((job_counter++))
+            done
+            ((job_counter++))  # Start from the next phonon directory
         fi
+    else
         job_counter=0  # Start from the beginning of the list for new structure directory
     fi
 
@@ -102,7 +100,7 @@ submit_in_batches() {
             done
         else
             echo "Waiting for jobs to finish... ($sq_results jobs in the queue)"
-            sleep 600  # Wait for 30 minutes before rechecking the queue
+            sleep 600  # Wait for 10 minutes before rechecking the queue
         fi
     done
 }
