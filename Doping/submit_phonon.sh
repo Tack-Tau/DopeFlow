@@ -215,7 +215,33 @@ for i in $(cat phonon_list); do
     # If there are no phonon directories, prepare a fresh start
     if [[ -z "$phon_dirs" ]]; then
         echo "No phonon directories found for $i. Preparing fresh start."
+        # Create PHON directory if it doesn't exist
+        mkdir -p "$calc_dir/$i/PHON"
+        
+        # Check and copy CONTCAR from Relax if POSCAR doesn't exist in PHON
+        if [[ ! -f "$calc_dir/$i/PHON/POSCAR" && -f "$calc_dir/$i/Relax/CONTCAR" ]]; then
+            cp "$calc_dir/$i/Relax/CONTCAR" "$calc_dir/$i/PHON/POSCAR"
+        fi
+        
+        # Navigate to PHON directory
         cd "$calc_dir/$i/PHON" || exit
+        
+        # Run vaspkit tasks if not already done
+        if [[ ! -f "$calc_dir/$i/PHON/PRIMCELL.vasp" ]]; then
+            vaspkit -task 602 1> /dev/null
+            cp POSCAR bk_POSCAR
+            cp PRIMCELL.vasp POSCAR
+            vaspkit -task 303 1> /dev/null
+        fi
+        
+        # Copy necessary script files if they don't exist
+        if [[ ! -f "$calc_dir/$i/PHON/generate_supercell.sh" ]]; then
+            cp "$calc_dir/INCAR_PHON" INCAR
+            cp "$calc_dir/sbp_PHON.sh" sbp.sh
+            cp "$calc_dir/"{convert_kpath.sh,generate_supercell.sh,extract_band_conf.sh,preprocess_high_symmetry_points.sh} ./
+        fi
+        
+        # Generate supercells
         bash generate_supercell.sh
         phon_dirs=$(find_phonon_dir "$calc_dir/${i}")  # Update the phon_dirs after generating supercells
     fi
