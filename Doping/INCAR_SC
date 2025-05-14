@@ -1,0 +1,21 @@
+SYSTEM = local optimisation
+EDIFF = 1e-8
+EDIFFG=-0.001
+ENCUT = 500
+ADDGRID = TRUE
+IBRION = -1
+#ISIF = 3
+NSW = 0
+ISMEAR = 0 ; SIGMA = 0.01
+POTIM = 0.1
+METAGGA = LMBJ
+#Wavefunction and charge
+ISYM = 0
+SYMPREC = 1.0e-7
+LSCALAPACK = FALSE
+LWAVE = FALSE
+LCHARG = TRUE
+#Target Pressure
+PSTRESS = 0
+NPAR = 4
+NBANDS = 412

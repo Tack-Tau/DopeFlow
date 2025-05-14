@@ -1,0 +1,11 @@
+SYSTEM = HSE
+EDIFF = 1e-8
+ENCUT = 500
+ISMEAR = 0 ; SIGMA = 0.01
+#Wavefunction and charge
+KPAR = 4
+LORBIT = 10
+NBANDS = 412
+
+LHFCALC = .TRUE. ; HFSCREEN = 0.2 ; AEXX = 0.25
+ALGO = D ; TIME = 0.4 ; LDIAG = .TRUE. 

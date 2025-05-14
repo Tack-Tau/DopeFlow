@@ -1,0 +1,8 @@
+System  = SiGe
+PREC = Normal ; ENCUT = 500.0
+ALGO = EXACT ; NELM = 1
+ISMEAR = 0 ; SIGMA = 0.01
+KPAR = 4
+NBANDS = 412
+LOPTICS = .TRUE. ; LPEAD = .TRUE.
+OMEGAMAX = 80

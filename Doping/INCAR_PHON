@@ -1,0 +1,29 @@
+ISTART = 0 # From-scratch; job : 0-new 1-cont 2-samecut
+# NWRITE = 3 # Verbosity
+ENCUT = 500
+PREC = Accurate # precision : accurate/normal/low
+IALGO = 38 # DAVidson, then RMM-DIIS
+EDIFF = 1.0e-8 # default 1.0e-7
+ISMEAR = 0 # gaussian
+SIGMA = 0.01
+
+! PAW's
+LREAL = .FALSE. # default - Automatic choice of how projection is done
+ADDGRID = .TRUE.
+ISYM = 0
+SYMPREC = 1.0e-8
+LSCALAPACK = FALSE
+
+! phonons
+IBRION = -1
+# POTIM = 0.01
+
+! parallelisation
+LPLANE = .FALSE.
+KPAR=4
+
+! output
+LWAVE = .FALSE. # WAVECAR file
+LCHARG = .FALSE. # CHCAR file
+LELF = .FALSE.
+LVTOT = .FALSE.
