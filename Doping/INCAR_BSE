@@ -1,3 +1,4 @@
+SYSTEM = BSE
 PREC = Normal ; ENCUT = 500.0
 ALGO = BSE 
 ANTIRES = 0

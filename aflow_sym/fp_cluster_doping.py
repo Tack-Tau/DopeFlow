@@ -115,90 +115,154 @@ def get_fp_mat(atoms, cutoff=4.0, contract=False, lmax=0, nx=400):
 
     return fp
 
-def pairwise_fp_dist(structures, fps, types_list, reference_fp=None, reference_types=None):
+def compute_fp_diff_matrices(structures, fps, types_list):
     """
-    Compute pairwise fingerprint distances between structures.
+    Compute fingerprint difference matrices for all pairs of structures.
+    Uses Hungarian algorithm to align atoms before computing differences.
     
     Parameters:
     - structures: List of ASE Atoms objects
     - fps: List of fingerprint matrices
     - types_list: List of type arrays
-    - reference_fp: Optional reference fingerprint (e.g., original POSCAR)
-    - reference_types: Optional reference types (e.g., original POSCAR)
     
     Returns:
-    - Distance matrix
+    - fp_diff_vectors: Array of flattened FP difference vectors [n_structures, nat * fp_len]
     """
-    n_struct = len(structures)
-    dist_matrix = np.zeros((n_struct, n_struct))
+    n_structures = len(structures)
+    ntyp = len(set(types_list[0]))
+    nat = len(fps[0])
+    fp_len = fps[0].shape[1]
     
-    # If reference is provided, compute distances relative to reference
-    if reference_fp is not None and reference_types is not None:
-        for i in range(n_struct):
-            # Distance from each structure to reference
-            ref_dist = get_fp_dist(fps[i], reference_fp, types_list[i])
-            
-            # Store reference distance on diagonal
-            dist_matrix[i, i] = ref_dist
-            
-            for j in range(i+1, n_struct):
-                # Calculate distance between structures i and j
-                struct_dist = get_fp_dist(fps[i], fps[j], types_list[i])
+    # Store all pairwise difference vectors
+    # We'll build a matrix where each row is a flattened difference from structure i to all others
+    fp_diff_matrix = np.zeros((n_structures, n_structures * nat * fp_len))
+    
+    for i in range(n_structures):
+        fp1 = fps[i]
+        types = types_list[i]
+        
+        for j in range(n_structures):
+            if i == j:
+                # Self-difference is zero
+                continue
                 
-                # Store the distances
-                dist_matrix[i, j] = struct_dist
-                dist_matrix[j, i] = struct_dist
-    else:
-        # Original pairwise distance calculation
-        for i in range(n_struct):
-            for j in range(i+1, n_struct):
-                dist = get_fp_dist(fps[i], fps[j], types_list[i])
-                dist_matrix[i, j] = dist
-                dist_matrix[j, i] = dist
+            fp2 = fps[j]
             
-    return dist_matrix
+            # Compute aligned difference using Hungarian algorithm
+            aligned_diff = np.zeros_like(fp1)
+            
+            for ityp in range(ntyp):
+                itype = ityp + 1
+                MX = compute_cost_matrix(fp1, fp2, types, itype)
+                row_ind, col_ind = linear_sum_assignment(MX)
+                
+                # Extract aligned differences for this type
+                for row, col in zip(row_ind, col_ind):
+                    if types[row] == itype:
+                        aligned_diff[row] = fp1[row] - fp2[col]
+            
+            # Flatten and store
+            start_idx = j * nat * fp_len
+            end_idx = (j + 1) * nat * fp_len
+            fp_diff_matrix[i, start_idx:end_idx] = aligned_diff.flatten()
+    
+    return fp_diff_matrix
 
-def compute_structure_features(structures, fps):
+def compute_pca_coordinates(fp_diff_vectors, n_components):
     """
-    Extract features from fingerprint matrices for clustering and PCA.
+    Compute PCA coordinates from fingerprint difference vectors.
+    Uses Gramian matrix eigendecomposition.
+    
+    Parameters:
+    - fp_diff_vectors: Array of flattened FP difference vectors [n_structures, feature_dim]
+    - n_components: Number of principal components to keep
+    
+    Returns:
+    - pc_coordinates: Principal component coordinates [n_structures, n_components]
+    - explained_variance: Explained variance ratio for each component
+    """
+    n_structures = fp_diff_vectors.shape[0]
+    
+    # Create Gramian matrix: G = X @ X.T
+    gramian = fp_diff_vectors @ fp_diff_vectors.T
+    
+    # Perform eigendecomposition
+    eigenvalues, eigenvectors = np.linalg.eigh(gramian)
+    
+    # Sort by descending eigenvalues
+    idx = eigenvalues.argsort()[::-1]
+    eigenvalues = eigenvalues[idx]
+    eigenvectors = eigenvectors[:, idx]
+    
+    # Take top n_components
+    n_components = min(n_components, n_structures)
+    pc_coordinates = eigenvectors[:, :n_components]
+    
+    # Scale by square root of eigenvalues for proper PCA coordinates
+    pc_coordinates = pc_coordinates * np.sqrt(np.maximum(eigenvalues[:n_components], 0))
+    
+    # Compute explained variance
+    total_variance = np.sum(np.maximum(eigenvalues, 0))
+    if total_variance > 0:
+        explained_variance = np.maximum(eigenvalues[:n_components], 0) / total_variance
+    else:
+        explained_variance = np.zeros(n_components)
+    
+    return pc_coordinates, explained_variance
+
+def filter_by_kim_energy(structures, model_name, percentile=80):
+    """
+    Filter structures by KIM empirical potential energy.
+    Excludes structures above the specified energy percentile.
     
     Parameters:
     - structures: List of ASE Atoms objects
-    - fps: List of fingerprint matrices
+    - model_name: KIM model name for energy calculation
+    - percentile: Energy percentile threshold (default 80, excludes top 20%)
     
     Returns:
-    - Feature matrix (n_structures, n_features)
+    - filtered_indices: Indices of structures below the energy threshold
+    - energies: Array of computed energies for all structures
     """
-    n_struct = len(structures)
+    from ase.calculators.kim.kim import KIM
     
-    # For simplicity, we'll flatten and concatenate fingerprints
-    # More sophisticated feature extraction can be implemented if needed
-    features = []
+    n_structures = len(structures)
+    energies = np.zeros(n_structures)
     
-    for i in range(n_struct):
-        # Get the flattened fingerprint as features
-        fp_flat = fps[i].flatten()
-        # Take a subset if dimensions are too large
-        if len(fp_flat) > 1000:
-            indices = np.linspace(0, len(fp_flat)-1, 1000, dtype=int)
-            fp_flat = fp_flat[indices]
-        features.append(fp_flat)
+    print(f"Computing KIM energies using model: {model_name}")
     
-    # Handle variable-length features
-    max_len = max(len(feat) for feat in features)
-    padded_features = np.zeros((n_struct, max_len))
+    # Create KIM calculator
+    calc = KIM(model_name)
     
-    for i, feat in enumerate(features):
-        padded_features[i, :len(feat)] = feat
-        
-    return padded_features
+    # Compute energies for all structures
+    for i, atoms in enumerate(structures):
+        atoms_copy = atoms.copy()
+        atoms_copy.calc = calc
+        try:
+            energy = atoms_copy.get_potential_energy()
+            # Normalize by number of atoms
+            energies[i] = energy / len(atoms_copy)
+        except Exception as e:
+            print(f"Warning: Failed to compute energy for structure {i}: {e}")
+            energies[i] = np.inf
+    
+    # Calculate percentile threshold
+    energy_threshold = np.percentile(energies[np.isfinite(energies)], percentile)
+    
+    # Filter structures
+    filtered_indices = [i for i in range(n_structures) if energies[i] <= energy_threshold]
+    
+    print(f"Energy threshold at {percentile}th percentile: {energy_threshold:.4f} eV/atom")
+    print(f"Energy range: [{np.min(energies):.4f}, {np.max(energies):.4f}] eV/atom")
+    print(f"Kept {len(filtered_indices)}/{n_structures} structures below threshold")
+    
+    return filtered_indices, energies
 
-def select_diverse_structures(structures, fps, types_list, max_structures=10, min_cluster_size=2, eps=1e-4, 
-                             visualize=False, n_substitutions=None, reference_fp=None, reference_types=None,
-                             log_scale=True, merge_factor=1.2):
+def select_diverse_structures(structures, fps, types_list, max_structures=10, min_cluster_size=2, 
+                               n_pca_components=10, visualize=False, n_substitutions=None):
     """
-    Select diverse structures using HDBSCAN clustering and selecting structures at 
-    centroids and half-radius points.
+    Select diverse structures using PCA on fingerprint differences and HDBSCAN clustering.
+    Selects structures at centroids and half-radius points in PCA space.
     
     Parameters:
     - structures: List of ASE Atoms objects
@@ -206,13 +270,9 @@ def select_diverse_structures(structures, fps, types_list, max_structures=10, mi
     - types_list: List of type arrays
     - max_structures: Maximum number of structures to select
     - min_cluster_size: Minimum size of a cluster in HDBSCAN
-    - eps: Tolerance band around half-radius (skin depth)
+    - n_pca_components: Number of PCA components to use for clustering
     - visualize: Whether to generate visualization plots
     - n_substitutions: Number of substitutions for labeling plots
-    - reference_fp: Optional reference fingerprint (e.g., original POSCAR)
-    - reference_types: Optional reference types (e.g., original POSCAR)
-    - log_scale: Whether to use log scale for distance matrix and visualization
-    - merge_factor: Factor for merging clusters (lower values preserve more clusters)
     
     Returns:
     - List of indices of selected structures
@@ -223,62 +283,57 @@ def select_diverse_structures(structures, fps, types_list, max_structures=10, mi
         # If we have fewer structures than requested, return all
         return list(range(n_structures))
     
-    # Compute distance matrix using fingerprint distance
-    print(f"Computing distance matrix for {n_structures} structures...")
-    original_distance_matrix = pairwise_fp_dist(structures, fps, types_list, reference_fp, reference_types)
+    # Compute fingerprint difference matrices
+    print(f"Computing FP difference matrices for {n_structures} structures...")
+    fp_diff_vectors = compute_fp_diff_matrices(structures, fps, types_list)
     
-    # Keep a copy of the original matrix for half-radius calculations
-    distance_matrix = original_distance_matrix.copy()
+    # Compute PCA coordinates
+    print(f"Computing PCA with {n_pca_components} components...")
+    pc_coordinates, explained_variance = compute_pca_coordinates(fp_diff_vectors, n_pca_components)
     
-    # Apply log scale if requested (common in materials science for better handling of different scales)
-    # Avoid log(0) by adding a small offset
-    if log_scale:
-        min_nonzero = np.min(distance_matrix[distance_matrix > 0])
-        offset = min_nonzero * 0.1  # Small offset to avoid log(0)
-        transformed_distance_matrix = np.log10(distance_matrix + offset)
-        # Ensure positivity by shifting if needed
-        if np.min(transformed_distance_matrix) < 0:
-            transformed_distance_matrix -= np.min(transformed_distance_matrix)
-        clustering_distance_matrix = transformed_distance_matrix
-        print(f"Using log-scaled distances for clustering")
-    else:
-        clustering_distance_matrix = distance_matrix
+    print(f"PCA explained variance (top {min(5, len(explained_variance))} components): "
+          f"{explained_variance[:min(5, len(explained_variance))]}")
+    print(f"Total variance explained: {np.sum(explained_variance):.4f}")
     
-    # Analyze distance distribution to set parameters dynamically
-    flat_distances = []
+    # Analyze PC coordinate distribution to set parameters
+    pc_distances = []
     for i in range(n_structures):
         for j in range(i+1, n_structures):
-            flat_distances.append(clustering_distance_matrix[i, j])
+            dist = np.linalg.norm(pc_coordinates[i] - pc_coordinates[j])
+            pc_distances.append(dist)
     
-    dist_array = np.array(flat_distances)
+    dist_array = np.array(pc_distances)
     
     # Calculate distribution statistics
     median_dist = np.median(dist_array)
-    q25_dist = np.percentile(dist_array, 25)  # 25th percentile
-    q75_dist = np.percentile(dist_array, 75)  # 75th percentile
-    iqr = q75_dist - q25_dist  # Interquartile range
+    q25_dist = np.percentile(dist_array, 25)
+    q75_dist = np.percentile(dist_array, 75)
+    iqr = q75_dist - q25_dist
     
-    # 1. Adjust min_cluster_size based on data distribution and size
-    # Smaller IQR = more homogeneous data = larger min_cluster_size
-    adjusted_min_cluster_size = max(
-        min_cluster_size, 
-        int(n_structures * (0.05 + 0.1 * np.exp(-iqr)))
-    )
-    adjusted_min_cluster_size = min(adjusted_min_cluster_size, n_structures // 5)
+    # Adjust min_cluster_size based on variance and dataset size
+    # For small datasets, use smaller cluster sizes
+    if n_structures < 20:
+        adjusted_min_cluster_size = 2
+    elif n_structures < 50:
+        adjusted_min_cluster_size = max(2, int(n_structures * 0.1))
+    else:
+        adjusted_min_cluster_size = max(
+            min_cluster_size,
+            int(n_structures * 0.05)
+        )
+        adjusted_min_cluster_size = min(adjusted_min_cluster_size, n_structures // 5)
     
-    # 2. Set epsilon based on distance distribution
-    # Use interquartile range to determine tolerance
-    epsilon = q25_dist * (0.3 + 0.4 * (iqr/median_dist))
+    # Ensure min_cluster_size is at least 2 (HDBSCAN requirement)
+    adjusted_min_cluster_size = max(2, adjusted_min_cluster_size)
     
-    print(f"Distance stats: median={median_dist:.4f}, q25={q25_dist:.4f}, q75={q75_dist:.4f}, IQR={iqr:.4f}")
-    print(f"Adjusted parameters: min_cluster_size={adjusted_min_cluster_size}, epsilon={epsilon:.4f}")
+    print(f"PC distance stats: median={median_dist:.4f}, q25={q25_dist:.4f}, q75={q75_dist:.4f}, IQR={iqr:.4f}")
+    print(f"Adjusted min_cluster_size={adjusted_min_cluster_size}")
     
-    # Perform HDBSCAN clustering with adjusted parameters
-    print(f"Performing HDBSCAN clustering with adaptive parameters...")
+    # Perform HDBSCAN clustering in PCA space with Euclidean metric
+    print(f"Performing HDBSCAN clustering in PCA space...")
     clusterer = HDBSCAN(min_cluster_size=adjusted_min_cluster_size, 
-                       metric='precomputed',
-                       cluster_selection_epsilon=epsilon)
-    cluster_labels = clusterer.fit_predict(clustering_distance_matrix)
+                       metric='euclidean')
+    cluster_labels = clusterer.fit_predict(pc_coordinates)
     
     # Get unique clusters
     unique_clusters = np.unique(cluster_labels)
@@ -286,15 +341,7 @@ def select_diverse_structures(structures, fps, types_list, max_structures=10, mi
     
     print(f"Found {n_clusters} clusters and {np.sum(cluster_labels == -1)} noise points")
     
-    # Prepare for visualization if requested
-    if visualize:
-        # Use MDS for 2D embedding of distance matrix
-        from sklearn.manifold import MDS
-        embedding = MDS(n_components=2, dissimilarity='precomputed', 
-                       random_state=42, normalized_stress='auto')
-        coords_2d = embedding.fit_transform(clustering_distance_matrix)
-    
-    # Calculate centroids for each cluster
+    # Calculate centroids for each cluster in PCA space
     centroids = []
     centroid_indices = []
     for cluster_id in unique_clusters:
@@ -303,111 +350,19 @@ def select_diverse_structures(structures, fps, types_list, max_structures=10, mi
             
         cluster_members = np.where(cluster_labels == cluster_id)[0]
         
-        # Create distance matrix for just this cluster
-        cluster_size = len(cluster_members)
-        cluster_distances = np.zeros((cluster_size, cluster_size))
-        for i, idx_i in enumerate(cluster_members):
-            for j, idx_j in enumerate(cluster_members):
-                cluster_distances[i, j] = clustering_distance_matrix[idx_i, idx_j]
+        # Calculate centroid as the point with minimum sum of Euclidean distances
+        cluster_pc_coords = pc_coordinates[cluster_members]
+        dist_to_others = np.zeros(len(cluster_members))
         
-        # Calculate distance to centroid for each structure in the cluster
-        # Centroid is the point with minimum sum of distances to all other points
-        dist_to_others = cluster_distances.sum(axis=1)
+        for i in range(len(cluster_members)):
+            for j in range(len(cluster_members)):
+                dist_to_others[i] += np.linalg.norm(cluster_pc_coords[i] - cluster_pc_coords[j])
+        
         centroid_idx = np.argmin(dist_to_others)
         centroid_structure_idx = cluster_members[centroid_idx]
         
         centroids.append(cluster_id)
         centroid_indices.append(centroid_structure_idx)
-    
-    # Check if centroids are well-separated, merge clusters if needed
-    # This ensures centroids are at least double their half-radius apart
-    merged_clusters = {}  # Maps original cluster ID to merged cluster ID
-    for i in range(len(centroids)):
-        for j in range(i+1, len(centroids)):
-            ci_idx = centroid_indices[i]
-            cj_idx = centroid_indices[j]
-            
-            # Distance between centroids
-            centroid_dist = clustering_distance_matrix[ci_idx, cj_idx]
-            
-            # Get the cluster members for both clusters
-            ci_members = np.where(cluster_labels == centroids[i])[0]
-            cj_members = np.where(cluster_labels == centroids[j])[0]
-            
-            # Calculate density metrics for clusters using adaptive weighting based on AFLOW approach
-            ci_median_dist = np.median([clustering_distance_matrix[ci_idx, m] for m in ci_members])
-            cj_median_dist = np.median([clustering_distance_matrix[cj_idx, m] for m in cj_members])
-            
-            # Calculate adaptive half-radius based on cluster density and AFLOW inspiration
-            # Use median distance rather than direct density calculation
-            ci_radius = ci_median_dist * 0.5  # Half the median distance to members
-            cj_radius = cj_median_dist * 0.5  # Half the median distance to members
-            
-            # Check if centroids are too close relative to their radii
-            min_required_dist = merge_factor * (ci_radius + cj_radius)
-            
-            if centroid_dist < min_required_dist:
-                print(f"Merging clusters {centroids[i]} and {centroids[j]} - too close: "
-                      f"dist={centroid_dist:.4f}, required={min_required_dist:.4f}")
-                
-                # Determine which cluster to keep (usually the one with more members)
-                keep_cluster = centroids[i] if len(ci_members) >= len(cj_members) else centroids[j]
-                merge_cluster = centroids[j] if len(ci_members) >= len(cj_members) else centroids[i]
-                
-                # Update the mapping for the merged cluster
-                merged_clusters[merge_cluster] = keep_cluster
-    
-    # Apply cluster merging to all points
-    if merged_clusters:
-        for i in range(len(cluster_labels)):
-            if cluster_labels[i] in merged_clusters:
-                cluster_labels[i] = merged_clusters[cluster_labels[i]]
-        
-        # Recalculate unique clusters and centroids after merging
-        unique_clusters = np.unique(cluster_labels)
-        n_clusters = len(unique_clusters[unique_clusters >= 0])
-        print(f"After merging: {n_clusters} clusters and {np.sum(cluster_labels == -1)} noise points")
-        
-        # Ensure cluster IDs start from 1 (except noise points which are -1)
-        # This addresses the issue where merged clusters always start from 0
-        new_cluster_mapping = {}
-        next_id = 1
-        for cluster_id in unique_clusters:
-            if cluster_id >= 0:  # Skip noise points
-                new_cluster_mapping[cluster_id] = next_id
-                next_id += 1
-        
-        # Apply the new mapping
-        for i in range(len(cluster_labels)):
-            if cluster_labels[i] >= 0:  # Skip noise points
-                cluster_labels[i] = new_cluster_mapping[cluster_labels[i]]
-        
-        # Update unique_clusters with the new mapping
-        unique_clusters = np.unique(cluster_labels)
-        
-        # Recalculate centroids with updated cluster IDs
-        centroids = []
-        centroid_indices = []
-        for cluster_id in unique_clusters:
-            if cluster_id < 0:  # Skip noise points
-                continue
-                
-            cluster_members = np.where(cluster_labels == cluster_id)[0]
-            
-            # Create distance matrix for just this cluster
-            cluster_size = len(cluster_members)
-            cluster_distances = np.zeros((cluster_size, cluster_size))
-            for i, idx_i in enumerate(cluster_members):
-                for j, idx_j in enumerate(cluster_members):
-                    cluster_distances[i, j] = clustering_distance_matrix[idx_i, idx_j]
-            
-            # Calculate distance to centroid for each structure in the cluster
-            dist_to_others = cluster_distances.sum(axis=1)
-            centroid_idx = np.argmin(dist_to_others)
-            centroid_structure_idx = cluster_members[centroid_idx]
-            
-            centroids.append(cluster_id)
-            centroid_indices.append(centroid_structure_idx)
     
     selected_indices = []
     rejected_indices = []
@@ -430,38 +385,33 @@ def select_diverse_structures(structures, fps, types_list, max_structures=10, mi
             selection_reasons.append('single')
             continue
             
-        # Create distance matrices for just this cluster - both original and clustering versions
-        cluster_distances_original = np.zeros((cluster_size, cluster_size))
-        cluster_distances_clustering = np.zeros((cluster_size, cluster_size))
+        # Get PC coordinates for this cluster
+        cluster_pc_coords = pc_coordinates[cluster_members]
         
-        for i, idx_i in enumerate(cluster_members):
-            for j, idx_j in enumerate(cluster_members):
-                cluster_distances_original[i, j] = original_distance_matrix[idx_i, idx_j]
-                cluster_distances_clustering[i, j] = clustering_distance_matrix[idx_i, idx_j]
-        
-        # Use clustering distance matrix to find the centroid
-        dist_to_others = cluster_distances_clustering.sum(axis=1)
-        centroid_idx = np.argmin(dist_to_others)
-        centroid_structure_idx = cluster_members[centroid_idx]
+        # Find the centroid (already computed)
+        centroid_idx = centroid_indices[centroids.index(cluster_id)]
+        centroid_local_idx = np.where(cluster_members == centroid_idx)[0][0]
         
         # Add centroid structure
-        if centroid_structure_idx not in selected_indices:
-            selected_indices.append(centroid_structure_idx)
-            centroid_memberships[centroid_structure_idx] = cluster_id
+        if centroid_idx not in selected_indices:
+            selected_indices.append(centroid_idx)
+            centroid_memberships[centroid_idx] = cluster_id
             selection_reasons.append('centroid')
         
-            # Calculate median distance using the ORIGINAL distance matrix
-            # This ensures we select structures that are properly half-radius in the original space
-            original_dists_from_centroid = cluster_distances_original[centroid_idx]
-            median_dist_from_centroid = np.median(original_dists_from_centroid)
+            # Calculate distances in PCA space
+            pc_dists_from_centroid = np.array([
+                np.linalg.norm(cluster_pc_coords[i] - cluster_pc_coords[centroid_local_idx])
+                for i in range(cluster_size)
+            ])
             
-            # Calculate adaptive half-radius based on cluster profile using original distances
+            median_dist_from_centroid = np.median(pc_dists_from_centroid)
+            
+            # Calculate adaptive half-radius based on cluster size
             half_radius = median_dist_from_centroid * 0.5
             
-            # For small clusters, increase the proportion of the half-radius
+            # For small clusters, increase the proportion
             if cluster_size < 10:
                 half_radius = median_dist_from_centroid * 0.7
-            
             # For large clusters, use a more conservative radius
             elif cluster_size > 30:
                 half_radius = median_dist_from_centroid * 0.4
@@ -469,34 +419,28 @@ def select_diverse_structures(structures, fps, types_list, max_structures=10, mi
             print(f"Cluster {cluster_id}: size={cluster_size}, "
                   f"median_dist={median_dist_from_centroid:.4f}, half_radius={half_radius:.4f}")
             
-            # Find structures at approximately half-radius in ORIGINAL distance space
-            dist_from_centroid = original_dists_from_centroid
-            
             # Define the band around half-radius
-            # Use an adaptive skin depth based on half-radius value
-            skin_depth = max(eps, half_radius * 0.15)  # Increased from 0.1 to 0.15 for wider band
+            skin_depth = max(0.0001, half_radius * 0.15)
             lower_bound = half_radius - skin_depth
             upper_bound = half_radius + skin_depth
             
             print(f"Searching for structures in band: [{lower_bound:.4f}, {upper_bound:.4f}]")
             
             # Find structures within the band
-            in_band = [(i, d) for i, d in enumerate(dist_from_centroid) 
-                      if lower_bound <= d <= upper_bound and i != centroid_idx]
+            in_band = [(i, d) for i, d in enumerate(pc_dists_from_centroid) 
+                      if lower_bound <= d <= upper_bound and i != centroid_local_idx]
             
             # Sort by how close they are to exactly half-radius
             in_band.sort(key=lambda x: abs(x[1] - half_radius))
             
             # Limit the number of structures to select from this cluster
-            # More structures from larger clusters
             n_to_select = max(1, int(max_structures * (cluster_size / n_structures)))
-            n_to_select = min(n_to_select, len(in_band) + 1)  # +1 for centroid (already added)
+            n_to_select = min(n_to_select, len(in_band) + 1)  # +1 for centroid
             
             print(f"Cluster {cluster_id}: Found {len(in_band)} structures in half-radius band, "
                   f"selecting up to {n_to_select-1} (already added centroid)")
             
-            # Add structures from the band, limited by n_to_select
-            # We've already added the centroid, so select n_to_select-1 more
+            # Add structures from the band
             for i, _ in in_band[:n_to_select-1]:
                 member_idx = cluster_members[i]
                 if member_idx not in selected_indices:
@@ -512,13 +456,12 @@ def select_diverse_structures(structures, fps, types_list, max_structures=10, mi
     # Handle noise points (-1) separately
     noise_points = np.where(cluster_labels == -1)[0]
     if len(noise_points) > 0:
-        # For noise points, select those most distant from already selected structures
-        # This ensures we capture outliers that might be interesting
+        # For noise points, select those most distant from already selected structures in PCA space
         if len(selected_indices) > 0:
             noise_distances = np.zeros((len(noise_points), len(selected_indices)))
             for i, noise_idx in enumerate(noise_points):
                 for j, selected_idx in enumerate(selected_indices):
-                    noise_distances[i, j] = clustering_distance_matrix[noise_idx, selected_idx]
+                    noise_distances[i, j] = np.linalg.norm(pc_coordinates[noise_idx] - pc_coordinates[selected_idx])
             
             # For each noise point, get its minimum distance to any selected structure
             min_distances = np.min(noise_distances, axis=1)
@@ -531,7 +474,7 @@ def select_diverse_structures(structures, fps, types_list, max_structures=10, mi
             n_noise_to_add = min(len(noise_points) // 4, max_structures - len(selected_indices))
             for i in range(min(n_noise_to_add, len(sorted_noise))):
                 selected_indices.append(sorted_noise[i][0])
-                centroid_memberships[sorted_noise[i][0]] = -1  # Noise points don't belong to any centroid
+                centroid_memberships[sorted_noise[i][0]] = -1
                 selection_reasons.append('noise')
             
             # Track rejected noise points
@@ -540,13 +483,13 @@ def select_diverse_structures(structures, fps, types_list, max_structures=10, mi
                     rejected_indices.append(noise_idx)
     
     # If we still need more structures, add more from rejected ones
-    # based on maximizing distance from already selected structures
+    # based on maximizing distance from already selected structures in PCA space
     remaining = max_structures - len(selected_indices)
     if remaining > 0 and len(rejected_indices) > 0:
         candidate_distances = np.zeros((len(rejected_indices), len(selected_indices)))
         for i, rejected_idx in enumerate(rejected_indices):
             for j, selected_idx in enumerate(selected_indices):
-                candidate_distances[i, j] = clustering_distance_matrix[rejected_idx, selected_idx]
+                candidate_distances[i, j] = np.linalg.norm(pc_coordinates[rejected_idx] - pc_coordinates[selected_idx])
         
         # For each rejected structure, get its minimum distance to any selected structure
         min_distances = np.min(candidate_distances, axis=1)
@@ -563,7 +506,7 @@ def select_diverse_structures(structures, fps, types_list, max_structures=10, mi
             nearest_centroid = -2
             for cent_idx, cent_cluster in centroid_memberships.items():
                 if selection_reasons[selected_indices.index(cent_idx)] == 'centroid':
-                    dist = clustering_distance_matrix[sorted_candidates[i][0], cent_idx]
+                    dist = np.linalg.norm(pc_coordinates[sorted_candidates[i][0]] - pc_coordinates[cent_idx])
                     if dist < min_dist:
                         min_dist = dist
                         nearest_centroid = cent_cluster
@@ -575,8 +518,11 @@ def select_diverse_structures(structures, fps, types_list, max_structures=10, mi
           f"{selection_reasons.count('additional')} additional")
     
     # Visualize results if requested
-    if visualize and 'coords_2d' in locals():
+    if visualize:
         plt.figure(figsize=(12, 10))
+        
+        # Use first 2 PCs for visualization
+        coords_2d = pc_coordinates[:, :2]
         
         # Plot all structures as background with cluster coloring
         for cluster_id in unique_clusters:
@@ -596,7 +542,6 @@ def select_diverse_structures(structures, fps, types_list, max_structures=10, mi
         unique_centroid_clusters = set(v for v in centroid_memberships.values() if v >= 0)
         
         # Create color map with distinct colors for each cluster
-        # Fix for matplotlib 3.7+ deprecation warning
         if hasattr(mpl.cm, 'colormaps'):  # Matplotlib 3.7+
             color_map = mpl.colormaps['tab10']
         elif hasattr(mpl, 'colormaps'):  # Alternative syntax for newer versions
@@ -607,12 +552,12 @@ def select_diverse_structures(structures, fps, types_list, max_structures=10, mi
         # Plot centroids first
         for cluster_id in unique_centroid_clusters:
             # Find centroid for this cluster
-            centroid_indices = [idx for idx, reason in zip(selected_indices, selection_reasons) 
+            centroid_idx_list = [idx for idx, reason in zip(selected_indices, selection_reasons) 
                                if reason == 'centroid' and centroid_memberships[idx] == cluster_id]
             
-            if centroid_indices:
+            if centroid_idx_list:
                 centroid_color = color_map(cluster_id % 10)  # Get distinct color
-                plt.scatter(coords_2d[centroid_indices, 0], coords_2d[centroid_indices, 1],
+                plt.scatter(coords_2d[centroid_idx_list, 0], coords_2d[centroid_idx_list, 1],
                            label=f'Centroid {cluster_id}', color=centroid_color,
                            marker='*', s=200, edgecolor='black', alpha=1.0)
                 
@@ -645,22 +590,21 @@ def select_diverse_structures(structures, fps, types_list, max_structures=10, mi
             plt.scatter(coords_2d[additional_indices, 0], coords_2d[additional_indices, 1],
                        label='Additional', color='orange', marker='p', s=100, alpha=0.8)
         
+        plt.xlabel('PC 1')
+        plt.ylabel('PC 2')
         plt.legend(loc='upper right', bbox_to_anchor=(1.3, 1))
-        
-        if log_scale:
-            plt.title(f'Selected Structures for {n_substitutions} Substitutions (Log Scale)')
-        else:
-            plt.title(f'Selected Structures for {n_substitutions} Substitutions')
+        plt.title(f'Selected Structures for {n_substitutions} Substitutions (PCA Space)')
         
         plt.tight_layout()
         plt.savefig(f'selected_{n_substitutions}_substitutions.png', dpi=300, bbox_inches='tight')
     
     return sorted(selected_indices)
 
-def POSCAR_GEN_CLUSTER(atoms_origin, elem_from, elem_to, max_subs, max_structures, max_iter=5000, visualize=False):
+def POSCAR_GEN_CLUSTER(atoms_origin, elem_from, elem_to, max_subs, max_structures, max_iter=5000, 
+                       visualize=False, n_pca_components=10, kim_model=None, energy_percentile=80):
     """
-    Generate diverse structures using random substitutions followed by clustering and selection
-    based on centroids and half-radius points.
+    Generate diverse structures using random substitutions followed by PCA-based clustering
+    and selection based on centroids and half-radius points.
     
     Parameters:
     - atoms_origin: Original ASE Atoms object
@@ -670,6 +614,9 @@ def POSCAR_GEN_CLUSTER(atoms_origin, elem_from, elem_to, max_subs, max_structure
     - max_structures: Maximum number of structures per substitution level
     - max_iter: Maximum number of random substitutions to try
     - visualize: Whether to generate visualization plots
+    - n_pca_components: Number of PCA components for clustering
+    - kim_model: KIM model name for energy filtering (None to disable)
+    - energy_percentile: Energy percentile threshold for filtering
     
     Returns:
     - List of selected structures
@@ -687,13 +634,6 @@ def POSCAR_GEN_CLUSTER(atoms_origin, elem_from, elem_to, max_subs, max_structure
     if max_subs > len(from_indices):
         max_subs = len(from_indices)
         print(f"Limiting max substitutions to {max_subs} (total number of {elem_from} atoms)")
-
-    # Precompute reference fingerprint from the original structure
-    # This will be used as a reference for fingerprint distance calculations
-    sorted_atoms_origin = sort(atoms_origin)
-    reference_fp = get_fp_mat(atoms=sorted_atoms_origin)
-    reference_types = np.int32(read_types(sorted_atoms_origin))
-    print(f"Computed reference fingerprint from original POSCAR")
 
     final_structures = []
 
@@ -766,7 +706,7 @@ def POSCAR_GEN_CLUSTER(atoms_origin, elem_from, elem_to, max_subs, max_structure
             print(f"Generated {len(structures_n_C)} candidate structures with {n_C} substitution(s)")
         
         if len(structures_n_C) > 0:
-            # Select diverse structures using the same approach for all substitution levels
+            # Select diverse structures using PCA-based clustering
             min_cluster_size = 10
             if n_C == 1 and len(structures_n_C) < 10:
                 # For very few structures with single substitution, adjust parameters
@@ -776,22 +716,31 @@ def POSCAR_GEN_CLUSTER(atoms_origin, elem_from, elem_to, max_subs, max_structure
                 structures_n_C, fps_n_C, types_n_C, 
                 max_structures=max_structures,
                 min_cluster_size=min_cluster_size,
-                eps=1e-4,  # Use much smaller skin-depth for more precise selection
+                n_pca_components=n_pca_components,
                 visualize=visualize,
-                n_substitutions=n_C,
-                reference_fp=reference_fp,  # Pass the reference fingerprint
-                reference_types=reference_types,  # Pass the reference types
-                log_scale=True,  # Use log scale as requested
-                merge_factor=1.2  # Reduced from 1.5 to preserve more clusters
+                n_substitutions=n_C
             )
             
             print(f"Selected {len(selected_indices)} diverse structures out of {len(structures_n_C)}")
+            
+            # Apply KIM energy filtering if requested
+            if kim_model is not None and len(selected_indices) > 1:
+                print(f"Filtering selected structures by KIM energy...")
+                selected_structures = [structures_n_C[idx] for idx in selected_indices]
+                filtered_indices, energies = filter_by_kim_energy(
+                    selected_structures,
+                    kim_model, 
+                    energy_percentile
+                )
+                # Map back to original indices
+                selected_indices = [selected_indices[i] for i in filtered_indices]
+                print(f"After energy filtering: {len(selected_indices)} structures remain")
             
             # Write selected structures to POSCAR files
             for i, idx in enumerate(selected_indices):
                 selected_struct = structures_n_C[idx]
                 poscar_name = f'POSCAR_{n_C}_{i+1}'
-                ase.io.write(poscar_name, selected_struct, 'vasp', direct=True, long_format=True, vasp5=True)
+                ase.io.write(poscar_name, selected_struct, format='vasp', direct=True, vasp5=True)
                 print(f"Wrote structure to: {poscar_name}")
                 final_structures.append(selected_struct)
                 
@@ -832,6 +781,12 @@ if __name__ == '__main__':
     max_subs = int(input())
     print("Enter the maximum number of structures per substitution: ", end="", flush=True)
     max_structures = int(input())
+    print("Enter number of PCA components (default 10): ", end="", flush=True)
+    n_pca_input = input().strip()
+    n_pca_components = int(n_pca_input) if n_pca_input else 10
+    print("Use KIM energy filtering? (y/n): ", end="", flush=True)
+    use_kim = input().lower() in ['y', 'yes']
+    kim_model = "Tersoff_LAMMPS_Tersoff_1989_SiGe__MO_350526375143_004" if use_kim else None
     print("Generate visualization plots? (y/n): ", end="", flush=True)
     vis_input = input().lower()
     visualize = vis_input == 'y' or vis_input == 'yes'
@@ -839,8 +794,13 @@ if __name__ == '__main__':
     if visualize:
         print("Visualization enabled - plots will be generated")
     
-    # Generate structures using the new clustering approach
-    POSCAR_GEN_CLUSTER(atoms_origin, elem_from, elem_to, max_subs, max_structures, visualize=visualize)
+    if kim_model:
+        print(f"KIM energy filtering enabled using model: {kim_model}")
+    
+    # Generate structures using the new PCA-based clustering approach
+    POSCAR_GEN_CLUSTER(atoms_origin, elem_from, elem_to, max_subs, max_structures, 
+                       visualize=visualize, n_pca_components=n_pca_components, 
+                       kim_model=kim_model)
 
     # Call post-processing function
     print("All substitutions complete. Starting post-processing...")

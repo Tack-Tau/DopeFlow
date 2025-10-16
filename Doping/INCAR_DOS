@@ -1,4 +1,4 @@
-SYSTEM = local optimisation
+SYSTEM = DOS calculation
 ISTART = 1
 ICHARG = 11
 LORBIT = 10

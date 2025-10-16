@@ -1,6 +1,7 @@
-SYSTEM = Electronic band calculation
+SYSTEM = ELF calculation
 ISTART = 1
-ICHARG = 2
+ICHARG = 11
+LELF = .TRUE.
 LORBIT = 10
 NEDOS = 1000
 EDIFF = 1e-8
@@ -10,10 +11,9 @@ ADDGRID = TRUE
 IBRION = -1
 #ISIF = 3
 NSW = 0
-ISMEAR = 0; SIGMA = 0.01;
+ISMEAR = -5
 #POTIM = 0.1
 METAGGA = LMBJ
-LASPH = TRUE
 #Wavefunction and charge
 ISYM = 0
 SYMPREC = 1.0e-7
@@ -24,3 +24,4 @@ LCHARG = TRUE
 PSTRESS = 0
 NPAR=4
 NBANDS = 412
+

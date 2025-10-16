@@ -57,6 +57,17 @@ while [[ 1 ]]
                         sbatch sbp.sh
                         echo "Job $job_count has been submitted" >> $calc_dir/job_${calc_type}.log
                         job_count=$((job_count+1))
+                    elif [[ $calc_type == "ELF" ]]
+                        then
+                        cp ./Relax/CONTCAR ./$calc_type/POSCAR
+                        cp ./SC/CHGCAR ./$calc_type/
+                        cd $calc_type
+                        cp $calc_dir/INCAR_$calc_type ./INCAR
+                        cp $calc_dir/sbp_${calc_type}.sh ./sbp.sh
+                        # cp $calc_dir/POTCAR ./POTCAR
+                        sbatch sbp.sh
+                        echo "Job $job_count has been submitted" >> $calc_dir/job_${calc_type}.log
+                        job_count=$((job_count+1))
                     elif [[ $calc_type == "Band" ]]
                         then
                         cp ./Relax/CONTCAR ./$calc_type/POSCAR

@@ -1,4 +1,4 @@
-System  = SiGe
+SYSTEM = DFT virtual orbital
 PREC = Normal ; ENCUT = 500.0
 ALGO = EXACT ; NELM = 1
 ISMEAR = 0 ; SIGMA = 0.01

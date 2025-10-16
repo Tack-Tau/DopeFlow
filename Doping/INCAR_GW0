@@ -1,4 +1,4 @@
-System  = SiGe
+SYSTEM = Single-shot GW
 PREC = Normal ; ENCUT = 500.0
 ALGO = GW0  
 ISMEAR = 0 ; SIGMA = 0.01 

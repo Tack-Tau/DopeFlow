@@ -1,4 +1,4 @@
-SYSTEM = local optimisation
+SYSTEM = SC calculation
 EDIFF = 1e-8
 EDIFFG=-0.001
 ENCUT = 500
