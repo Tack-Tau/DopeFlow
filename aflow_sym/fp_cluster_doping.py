@@ -5,16 +5,17 @@ import sys
 import numpy as np
 import ase.io
 from ase.build import sort
-from random import sample
+from random import sample, randint, random
 from numba import jit
 import libfp
 from scipy.optimize import linear_sum_assignment
 from functools import reduce
 from ase.data import chemical_symbols
-from sklearn.cluster import HDBSCAN
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import matplotlib.cm as cm
+from math import exp
+from reformpy.entropy import calculate_entropy_jit
 
 def read_types(atoms, znucl_list=None):
     """
@@ -115,100 +116,125 @@ def get_fp_mat(atoms, cutoff=4.0, contract=False, lmax=0, nx=400):
 
     return fp
 
-def compute_fp_diff_matrices(structures, fps, types_list):
+def entropy_guided_mcmc_sampling(atoms_origin, from_indices, elem_to, n_C,
+                                max_structures=10, n_iterations=10000, 
+                                temperature=1.0, thin=10, burnin=1000):
     """
-    Compute fingerprint difference matrices for all pairs of structures.
-    Uses Hungarian algorithm to align atoms before computing differences.
+    Generate diverse substituted structures using entropy-guided MCMC sampling.
+    Uses ReformPy's FP entropy to maximize atomic environment diversity.
+    
+    Algorithm:
+    1. Start with random substitution configuration
+    2. Propose swaps between substituted and non-substituted sites
+    3. Accept/reject based on entropy change (Metropolis-Hastings criterion)
+    4. Collect structures from equilibrated Markov chain
     
     Parameters:
-    - structures: List of ASE Atoms objects
-    - fps: List of fingerprint matrices
-    - types_list: List of type arrays
+    - atoms_origin: Original ASE Atoms object
+    - from_indices: List of indices that can be substituted
+    - elem_to: New element symbol
+    - n_C: Number of substitutions
+    - max_structures: Maximum number of diverse structures to return
+    - n_iterations: Total MCMC iterations
+    - temperature: MCMC temperature (higher = more exploration)
+    - thin: Keep every nth sample (reduces correlation)
+    - burnin: Number of initial iterations to discard
     
     Returns:
-    - fp_diff_vectors: Array of flattened FP difference vectors [n_structures, nat * fp_len]
+    - selected_structures: List of diverse structures
+    - entropies: Corresponding entropy values
     """
-    n_structures = len(structures)
-    ntyp = len(set(types_list[0]))
-    nat = len(fps[0])
-    fp_len = fps[0].shape[1]
+    print(f"Entropy-guided MCMC sampling for {n_C} substitutions...")
+    print(f"  Parameters: {n_iterations} iterations, temp={temperature}, thin={thin}, burnin={burnin}")
     
-    # Store all pairwise difference vectors
-    # We'll build a matrix where each row is a flattened difference from structure i to all others
-    fp_diff_matrix = np.zeros((n_structures, n_structures * nat * fp_len))
+    # Initialize with random configuration
+    current_indices = sorted(sample(from_indices, n_C))
+    current_atoms = atoms_origin.copy()
+    for idx in current_indices:
+        current_atoms[idx].symbol = elem_to
     
-    for i in range(n_structures):
-        fp1 = fps[i]
-        types = types_list[i]
+    # Calculate initial fingerprint and entropy
+    sorted_atoms = sort(current_atoms)
+    current_fp = get_fp_mat(atoms=sorted_atoms)
+    current_entropy = calculate_entropy_jit(current_fp, min_threshold=1e-8)
+    
+    # Track samples
+    structures = []
+    entropies = []
+    substitution_patterns = []
+    
+    accepted = 0
+    for iteration in range(n_iterations):
+        # Propose swap: randomly select one substituted and one non-substituted site
+        substituted_idx = randint(0, n_C - 1)
+        old_site = current_indices[substituted_idx]
         
-        for j in range(n_structures):
-            if i == j:
-                # Self-difference is zero
-                continue
+        # Get non-substituted sites
+        non_substituted = [idx for idx in from_indices if idx not in current_indices]
+        new_site = non_substituted[randint(0, len(non_substituted) - 1)]
+        
+        # Create proposed configuration
+        proposed_indices = current_indices.copy()
+        proposed_indices[substituted_idx] = new_site
+        proposed_indices = sorted(proposed_indices)
+        
+        # Create proposed structure
+        proposed_atoms = atoms_origin.copy()
+        for idx in proposed_indices:
+            proposed_atoms[idx].symbol = elem_to
+        
+        # Calculate proposed fingerprint and entropy
+        sorted_proposed = sort(proposed_atoms)
+        proposed_fp = get_fp_mat(atoms=sorted_proposed)
+        proposed_entropy = calculate_entropy_jit(proposed_fp, min_threshold=1e-8)
+        
+        # Metropolis-Hastings acceptance criterion
+        # We want to MAXIMIZE entropy, so accept if entropy increases
+        # or with probability exp(ΔS/T) if it decreases
+        delta_entropy = proposed_entropy - current_entropy
+        
+        accept_prob = min(1.0, exp(delta_entropy / temperature))
+        
+        if random() < accept_prob:
+            # Accept proposed move
+            current_indices = proposed_indices
+            current_atoms = proposed_atoms
+            sorted_atoms = sorted_proposed
+            current_fp = proposed_fp
+            current_entropy = proposed_entropy
+            accepted += 1
+        
+        # Collect samples after burnin, with thinning
+        if iteration >= burnin and (iteration - burnin) % thin == 0:
+            # Check if this pattern is new (avoid exact duplicates)
+            pattern_tuple = tuple(current_indices)
+            if pattern_tuple not in substitution_patterns:
+                structures.append(sorted_atoms.copy())
+                entropies.append(current_entropy)
+                substitution_patterns.append(pattern_tuple)
                 
-            fp2 = fps[j]
-            
-            # Compute aligned difference using Hungarian algorithm
-            aligned_diff = np.zeros_like(fp1)
-            
-            for ityp in range(ntyp):
-                itype = ityp + 1
-                MX = compute_cost_matrix(fp1, fp2, types, itype)
-                row_ind, col_ind = linear_sum_assignment(MX)
-                
-                # Extract aligned differences for this type
-                for row, col in zip(row_ind, col_ind):
-                    if types[row] == itype:
-                        aligned_diff[row] = fp1[row] - fp2[col]
-            
-            # Flatten and store
-            start_idx = j * nat * fp_len
-            end_idx = (j + 1) * nat * fp_len
-            fp_diff_matrix[i, start_idx:end_idx] = aligned_diff.flatten()
+                # Stop if we have enough unique structures
+                if len(structures) >= max_structures * 3:  # Generate extra for diversity
+                    break
     
-    return fp_diff_matrix
-
-def compute_pca_coordinates(fp_diff_vectors, n_components):
-    """
-    Compute PCA coordinates from fingerprint difference vectors.
-    Uses Gramian matrix eigendecomposition.
+    acceptance_rate = accepted / n_iterations
+    print(f"  MCMC acceptance rate: {acceptance_rate:.2%}")
+    print(f"  Collected {len(structures)} unique structures")
     
-    Parameters:
-    - fp_diff_vectors: Array of flattened FP difference vectors [n_structures, feature_dim]
-    - n_components: Number of principal components to keep
-    
-    Returns:
-    - pc_coordinates: Principal component coordinates [n_structures, n_components]
-    - explained_variance: Explained variance ratio for each component
-    """
-    n_structures = fp_diff_vectors.shape[0]
-    
-    # Create Gramian matrix: G = X @ X.T
-    gramian = fp_diff_vectors @ fp_diff_vectors.T
-    
-    # Perform eigendecomposition
-    eigenvalues, eigenvectors = np.linalg.eigh(gramian)
-    
-    # Sort by descending eigenvalues
-    idx = eigenvalues.argsort()[::-1]
-    eigenvalues = eigenvalues[idx]
-    eigenvectors = eigenvectors[:, idx]
-    
-    # Take top n_components
-    n_components = min(n_components, n_structures)
-    pc_coordinates = eigenvectors[:, :n_components]
-    
-    # Scale by square root of eigenvalues for proper PCA coordinates
-    pc_coordinates = pc_coordinates * np.sqrt(np.maximum(eigenvalues[:n_components], 0))
-    
-    # Compute explained variance
-    total_variance = np.sum(np.maximum(eigenvalues, 0))
-    if total_variance > 0:
-        explained_variance = np.maximum(eigenvalues[:n_components], 0) / total_variance
+    # Select top max_structures by entropy (most diverse)
+    if len(structures) > max_structures:
+        sorted_indices = np.argsort(entropies)[::-1]  # Descending order
+        selected_indices = sorted_indices[:max_structures]
+        selected_structures = [structures[i] for i in selected_indices]
+        selected_entropies = [entropies[i] for i in selected_indices]
     else:
-        explained_variance = np.zeros(n_components)
+        selected_structures = structures
+        selected_entropies = entropies
     
-    return pc_coordinates, explained_variance
+    print(f"  Selected {len(selected_structures)} structures")
+    print(f"  Entropy range: [{min(selected_entropies):.4f}, {max(selected_entropies):.4f}]")
+    
+    return selected_structures, selected_entropies
 
 def filter_by_kim_energy(structures, model_name, percentile=80):
     """
@@ -258,353 +284,58 @@ def filter_by_kim_energy(structures, model_name, percentile=80):
     
     return filtered_indices, energies
 
-def select_diverse_structures(structures, fps, types_list, max_structures=10, min_cluster_size=2, 
-                               n_pca_components=10, visualize=False, n_substitutions=None):
+def visualize_entropy_distribution(entropies, n_substitutions, output_file=None):
     """
-    Select diverse structures using PCA on fingerprint differences and HDBSCAN clustering.
-    Selects structures at centroids and half-radius points in PCA space.
+    Visualize the entropy distribution of generated structures.
     
     Parameters:
-    - structures: List of ASE Atoms objects
-    - fps: List of fingerprint matrices
-    - types_list: List of type arrays
-    - max_structures: Maximum number of structures to select
-    - min_cluster_size: Minimum size of a cluster in HDBSCAN
-    - n_pca_components: Number of PCA components to use for clustering
-    - visualize: Whether to generate visualization plots
-    - n_substitutions: Number of substitutions for labeling plots
-    
-    Returns:
-    - List of indices of selected structures
+    - entropies: List of entropy values
+    - n_substitutions: Number of substitutions
+    - output_file: Output filename (default: entropy_distribution_{n_substitutions}.png)
     """
-    n_structures = len(structures)
+    if output_file is None:
+        output_file = f'entropy_distribution_{n_substitutions}_substitutions.png'
     
-    if n_structures <= max_structures:
-        # If we have fewer structures than requested, return all
-        return list(range(n_structures))
+    plt.figure(figsize=(12, 5))
     
-    # Compute fingerprint difference matrices
-    print(f"Computing FP difference matrices for {n_structures} structures...")
-    fp_diff_vectors = compute_fp_diff_matrices(structures, fps, types_list)
+    # Plot 1: Entropy histogram
+    plt.subplot(1, 2, 1)
+    plt.hist(entropies, bins=min(30, len(entropies)), edgecolor='black', alpha=0.7)
+    plt.xlabel('Entropy (FP Diversity Measure)')
+    plt.ylabel('Count')
+    plt.title(f'{n_substitutions} Substitutions: Entropy Distribution')
+    plt.axvline(np.mean(entropies), color='r', linestyle='--', label=f'Mean: {np.mean(entropies):.3f}')
+    plt.axvline(np.median(entropies), color='g', linestyle='--', label=f'Median: {np.median(entropies):.3f}')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
     
-    # Compute PCA coordinates
-    print(f"Computing PCA with {n_pca_components} components...")
-    pc_coordinates, explained_variance = compute_pca_coordinates(fp_diff_vectors, n_pca_components)
+    # Plot 2: Entropy vs structure index (sorted)
+    plt.subplot(1, 2, 2)
+    sorted_indices = np.argsort(entropies)[::-1]
+    sorted_entropies = [entropies[i] for i in sorted_indices]
+    plt.plot(range(len(sorted_entropies)), sorted_entropies, 'o-', markersize=4)
+    plt.xlabel('Structure Rank (by entropy)')
+    plt.ylabel('Entropy')
+    plt.title(f'{n_substitutions} Substitutions: Ranked Diversity')
+    plt.grid(True, alpha=0.3)
     
-    print(f"PCA explained variance (top {min(5, len(explained_variance))} components): "
-          f"{explained_variance[:min(5, len(explained_variance))]}")
-    print(f"Total variance explained: {np.sum(explained_variance):.4f}")
+    # Add statistics
+    stats_text = f'N={len(entropies)}\n'
+    stats_text += f'Range=[{min(entropies):.3f}, {max(entropies):.3f}]\n'
+    stats_text += f'Std={np.std(entropies):.3f}'
+    plt.text(0.05, 0.95, stats_text, transform=plt.gca().transAxes,
+             verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
     
-    # Analyze PC coordinate distribution to set parameters
-    pc_distances = []
-    for i in range(n_structures):
-        for j in range(i+1, n_structures):
-            dist = np.linalg.norm(pc_coordinates[i] - pc_coordinates[j])
-            pc_distances.append(dist)
-    
-    dist_array = np.array(pc_distances)
-    
-    # Calculate distribution statistics
-    median_dist = np.median(dist_array)
-    q25_dist = np.percentile(dist_array, 25)
-    q75_dist = np.percentile(dist_array, 75)
-    iqr = q75_dist - q25_dist
-    
-    # Adjust min_cluster_size based on variance and dataset size
-    # For small datasets, use smaller cluster sizes
-    if n_structures < 20:
-        adjusted_min_cluster_size = 2
-    elif n_structures < 50:
-        adjusted_min_cluster_size = max(2, int(n_structures * 0.1))
-    else:
-        adjusted_min_cluster_size = max(
-            min_cluster_size,
-            int(n_structures * 0.05)
-        )
-        adjusted_min_cluster_size = min(adjusted_min_cluster_size, n_structures // 5)
-    
-    # Ensure min_cluster_size is at least 2 (HDBSCAN requirement)
-    adjusted_min_cluster_size = max(2, adjusted_min_cluster_size)
-    
-    print(f"PC distance stats: median={median_dist:.4f}, q25={q25_dist:.4f}, q75={q75_dist:.4f}, IQR={iqr:.4f}")
-    print(f"Adjusted min_cluster_size={adjusted_min_cluster_size}")
-    
-    # Perform HDBSCAN clustering in PCA space with Euclidean metric
-    print(f"Performing HDBSCAN clustering in PCA space...")
-    clusterer = HDBSCAN(min_cluster_size=adjusted_min_cluster_size, 
-                       metric='euclidean')
-    cluster_labels = clusterer.fit_predict(pc_coordinates)
-    
-    # Get unique clusters
-    unique_clusters = np.unique(cluster_labels)
-    n_clusters = len(unique_clusters[unique_clusters >= 0])  # Exclude noise (-1)
-    
-    print(f"Found {n_clusters} clusters and {np.sum(cluster_labels == -1)} noise points")
-    
-    # Calculate centroids for each cluster in PCA space
-    centroids = []
-    centroid_indices = []
-    for cluster_id in unique_clusters:
-        if cluster_id < 0:  # Skip noise points
-            continue
-            
-        cluster_members = np.where(cluster_labels == cluster_id)[0]
-        
-        # Calculate centroid as the point with minimum sum of Euclidean distances
-        cluster_pc_coords = pc_coordinates[cluster_members]
-        dist_to_others = np.zeros(len(cluster_members))
-        
-        for i in range(len(cluster_members)):
-            for j in range(len(cluster_members)):
-                dist_to_others[i] += np.linalg.norm(cluster_pc_coords[i] - cluster_pc_coords[j])
-        
-        centroid_idx = np.argmin(dist_to_others)
-        centroid_structure_idx = cluster_members[centroid_idx]
-        
-        centroids.append(cluster_id)
-        centroid_indices.append(centroid_structure_idx)
-    
-    selected_indices = []
-    rejected_indices = []
-    # Track which centroid each selected structure belongs to
-    centroid_memberships = {}  # {structure_index: centroid_cluster_id}
-    selection_reasons = []  # For visualization
-    
-    # Process each cluster
-    for cluster_id in unique_clusters:
-        if cluster_id < 0:  # Skip noise points for now
-            continue
-            
-        cluster_members = np.where(cluster_labels == cluster_id)[0]
-        cluster_size = len(cluster_members)
-        
-        if cluster_size == 1:
-            # If only one member, add it directly
-            selected_indices.append(cluster_members[0])
-            centroid_memberships[cluster_members[0]] = cluster_id
-            selection_reasons.append('single')
-            continue
-            
-        # Get PC coordinates for this cluster
-        cluster_pc_coords = pc_coordinates[cluster_members]
-        
-        # Find the centroid (already computed)
-        centroid_idx = centroid_indices[centroids.index(cluster_id)]
-        centroid_local_idx = np.where(cluster_members == centroid_idx)[0][0]
-        
-        # Add centroid structure
-        if centroid_idx not in selected_indices:
-            selected_indices.append(centroid_idx)
-            centroid_memberships[centroid_idx] = cluster_id
-            selection_reasons.append('centroid')
-        
-            # Calculate distances in PCA space
-            pc_dists_from_centroid = np.array([
-                np.linalg.norm(cluster_pc_coords[i] - cluster_pc_coords[centroid_local_idx])
-                for i in range(cluster_size)
-            ])
-            
-            median_dist_from_centroid = np.median(pc_dists_from_centroid)
-            
-            # Calculate adaptive half-radius based on cluster size
-            half_radius = median_dist_from_centroid * 0.5
-            
-            # For small clusters, increase the proportion
-            if cluster_size < 10:
-                half_radius = median_dist_from_centroid * 0.7
-            # For large clusters, use a more conservative radius
-            elif cluster_size > 30:
-                half_radius = median_dist_from_centroid * 0.4
-            
-            print(f"Cluster {cluster_id}: size={cluster_size}, "
-                  f"median_dist={median_dist_from_centroid:.4f}, half_radius={half_radius:.4f}")
-            
-            # Define the band around half-radius
-            skin_depth = max(0.0001, half_radius * 0.15)
-            lower_bound = half_radius - skin_depth
-            upper_bound = half_radius + skin_depth
-            
-            print(f"Searching for structures in band: [{lower_bound:.4f}, {upper_bound:.4f}]")
-            
-            # Find structures within the band
-            in_band = [(i, d) for i, d in enumerate(pc_dists_from_centroid) 
-                      if lower_bound <= d <= upper_bound and i != centroid_local_idx]
-            
-            # Sort by how close they are to exactly half-radius
-            in_band.sort(key=lambda x: abs(x[1] - half_radius))
-            
-            # Limit the number of structures to select from this cluster
-            n_to_select = max(1, int(max_structures * (cluster_size / n_structures)))
-            n_to_select = min(n_to_select, len(in_band) + 1)  # +1 for centroid
-            
-            print(f"Cluster {cluster_id}: Found {len(in_band)} structures in half-radius band, "
-                  f"selecting up to {n_to_select-1} (already added centroid)")
-            
-            # Add structures from the band
-            for i, _ in in_band[:n_to_select-1]:
-                member_idx = cluster_members[i]
-                if member_idx not in selected_indices:
-                    selected_indices.append(member_idx)
-                    centroid_memberships[member_idx] = cluster_id
-                    selection_reasons.append('half_radius')
-        
-        # Track rejected structures for visualization
-        for i in range(cluster_size):
-            if cluster_members[i] not in selected_indices:
-                rejected_indices.append(cluster_members[i])
-    
-    # Handle noise points (-1) separately
-    noise_points = np.where(cluster_labels == -1)[0]
-    if len(noise_points) > 0:
-        # For noise points, select those most distant from already selected structures in PCA space
-        if len(selected_indices) > 0:
-            noise_distances = np.zeros((len(noise_points), len(selected_indices)))
-            for i, noise_idx in enumerate(noise_points):
-                for j, selected_idx in enumerate(selected_indices):
-                    noise_distances[i, j] = np.linalg.norm(pc_coordinates[noise_idx] - pc_coordinates[selected_idx])
-            
-            # For each noise point, get its minimum distance to any selected structure
-            min_distances = np.min(noise_distances, axis=1)
-            
-            # Sort noise points by their minimum distance (descending)
-            sorted_noise = [(idx, dist) for idx, dist in zip(noise_points, min_distances)]
-            sorted_noise.sort(key=lambda x: x[1], reverse=True)
-            
-            # Select some portion of noise points, prioritizing those most different
-            n_noise_to_add = min(len(noise_points) // 4, max_structures - len(selected_indices))
-            for i in range(min(n_noise_to_add, len(sorted_noise))):
-                selected_indices.append(sorted_noise[i][0])
-                centroid_memberships[sorted_noise[i][0]] = -1
-                selection_reasons.append('noise')
-            
-            # Track rejected noise points
-            for noise_idx in noise_points:
-                if noise_idx not in selected_indices:
-                    rejected_indices.append(noise_idx)
-    
-    # If we still need more structures, add more from rejected ones
-    # based on maximizing distance from already selected structures in PCA space
-    remaining = max_structures - len(selected_indices)
-    if remaining > 0 and len(rejected_indices) > 0:
-        candidate_distances = np.zeros((len(rejected_indices), len(selected_indices)))
-        for i, rejected_idx in enumerate(rejected_indices):
-            for j, selected_idx in enumerate(selected_indices):
-                candidate_distances[i, j] = np.linalg.norm(pc_coordinates[rejected_idx] - pc_coordinates[selected_idx])
-        
-        # For each rejected structure, get its minimum distance to any selected structure
-        min_distances = np.min(candidate_distances, axis=1)
-        
-        # Sort rejected structures by their minimum distance (descending)
-        sorted_candidates = [(idx, dist) for idx, dist in zip(rejected_indices, min_distances)]
-        sorted_candidates.sort(key=lambda x: x[1], reverse=True)
-        
-        # Add the most distant rejected structures
-        for i in range(min(remaining, len(sorted_candidates))):
-            selected_indices.append(sorted_candidates[i][0])
-            # Assign these to the nearest centroid or -2 if none
-            min_dist = float('inf')
-            nearest_centroid = -2
-            for cent_idx, cent_cluster in centroid_memberships.items():
-                if selection_reasons[selected_indices.index(cent_idx)] == 'centroid':
-                    dist = np.linalg.norm(pc_coordinates[sorted_candidates[i][0]] - pc_coordinates[cent_idx])
-                    if dist < min_dist:
-                        min_dist = dist
-                        nearest_centroid = cent_cluster
-            centroid_memberships[sorted_candidates[i][0]] = nearest_centroid
-            selection_reasons.append('additional')
-    
-    print(f"Selected {len(selected_indices)} structures: {selection_reasons.count('centroid')} centroids, "
-          f"{selection_reasons.count('half_radius')} half-radius, {selection_reasons.count('noise')} noise, "
-          f"{selection_reasons.count('additional')} additional")
-    
-    # Visualize results if requested
-    if visualize:
-        plt.figure(figsize=(12, 10))
-        
-        # Use first 2 PCs for visualization
-        coords_2d = pc_coordinates[:, :2]
-        
-        # Plot all structures as background with cluster coloring
-        for cluster_id in unique_clusters:
-            # Find all structures in this cluster (including rejected ones)
-            cluster_indices = np.where(cluster_labels == cluster_id)[0]
-            
-            # Plot rejected structures in this cluster as gray
-            rejected_in_cluster = [idx for idx in cluster_indices if idx in rejected_indices]
-            if rejected_in_cluster:
-                plt.scatter(coords_2d[rejected_in_cluster, 0], coords_2d[rejected_in_cluster, 1], 
-                           c='lightgray', alpha=0.3, s=30, marker='o')
-        
-        # Generate colors for centroids - one distinct color per cluster
-        from matplotlib.colors import to_rgba
-        
-        # Get unique centroid cluster IDs (excluding noise which is -1)
-        unique_centroid_clusters = set(v for v in centroid_memberships.values() if v >= 0)
-        
-        # Create color map with distinct colors for each cluster
-        if hasattr(mpl.cm, 'colormaps'):  # Matplotlib 3.7+
-            color_map = mpl.colormaps['tab10']
-        elif hasattr(mpl, 'colormaps'):  # Alternative syntax for newer versions
-            color_map = mpl.colormaps['tab10']
-        else:  # Fall back to older version for compatibility
-            color_map = cm.get_cmap('tab10', max(10, len(unique_centroid_clusters)))
-            
-        # Plot centroids first
-        for cluster_id in unique_centroid_clusters:
-            # Find centroid for this cluster
-            centroid_idx_list = [idx for idx, reason in zip(selected_indices, selection_reasons) 
-                               if reason == 'centroid' and centroid_memberships[idx] == cluster_id]
-            
-            if centroid_idx_list:
-                centroid_color = color_map(cluster_id % 10)  # Get distinct color
-                plt.scatter(coords_2d[centroid_idx_list, 0], coords_2d[centroid_idx_list, 1],
-                           label=f'Centroid {cluster_id}', color=centroid_color,
-                           marker='*', s=200, edgecolor='black', alpha=1.0)
-                
-                # Find half-radius points associated with this centroid
-                half_radius_indices = [idx for idx, reason in zip(selected_indices, selection_reasons)
-                                      if reason == 'half_radius' and centroid_memberships[idx] == cluster_id]
-                
-                if half_radius_indices:
-                    # Use a lighter version of the same color for half-radius points
-                    half_radius_color = to_rgba(centroid_color, alpha=0.7)
-                    plt.scatter(coords_2d[half_radius_indices, 0], coords_2d[half_radius_indices, 1],
-                               label=f'Half-radius {cluster_id}', color=half_radius_color,
-                               marker='o', s=100, edgecolor='black', alpha=0.7)
-        
-        # Plot single-member clusters
-        single_indices = [idx for idx, reason in zip(selected_indices, selection_reasons) if reason == 'single']
-        if single_indices:
-            plt.scatter(coords_2d[single_indices, 0], coords_2d[single_indices, 1],
-                       label='Single member', color='purple', marker='s', s=100, alpha=0.8)
-        
-        # Plot noise points
-        noise_indices = [idx for idx, reason in zip(selected_indices, selection_reasons) if reason == 'noise']
-        if noise_indices:
-            plt.scatter(coords_2d[noise_indices, 0], coords_2d[noise_indices, 1],
-                       label='Noise', color='green', marker='d', s=100, alpha=0.8)
-        
-        # Plot additional points
-        additional_indices = [idx for idx, reason in zip(selected_indices, selection_reasons) if reason == 'additional']
-        if additional_indices:
-            plt.scatter(coords_2d[additional_indices, 0], coords_2d[additional_indices, 1],
-                       label='Additional', color='orange', marker='p', s=100, alpha=0.8)
-        
-        plt.xlabel('PC 1')
-        plt.ylabel('PC 2')
-        plt.legend(loc='upper right', bbox_to_anchor=(1.3, 1))
-        plt.title(f'Selected Structures for {n_substitutions} Substitutions (PCA Space)')
-        
-        plt.tight_layout()
-        plt.savefig(f'selected_{n_substitutions}_substitutions.png', dpi=300, bbox_inches='tight')
-    
-    return sorted(selected_indices)
+    plt.tight_layout()
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved entropy distribution plot to: {output_file}")
 
-def POSCAR_GEN_CLUSTER(atoms_origin, elem_from, elem_to, max_subs, max_structures, max_iter=5000, 
-                       visualize=False, n_pca_components=10, kim_model=None, energy_percentile=80):
+def POSCAR_GEN_CLUSTER(atoms_origin, elem_from, elem_to, max_subs, max_structures, max_iter=10000, 
+                       visualize=False, mcmc_temperature=1.0, kim_model=None, energy_percentile=80):
     """
-    Generate diverse structures using random substitutions followed by PCA-based clustering
-    and selection based on centroids and half-radius points.
+    Generate diverse structures using entropy-guided MCMC sampling.
+    Uses ReformPy's fingerprint entropy to maximize atomic environment diversity.
     
     Parameters:
     - atoms_origin: Original ASE Atoms object
@@ -612,14 +343,14 @@ def POSCAR_GEN_CLUSTER(atoms_origin, elem_from, elem_to, max_subs, max_structure
     - elem_to: New element
     - max_subs: Maximum number of substitutions
     - max_structures: Maximum number of structures per substitution level
-    - max_iter: Maximum number of random substitutions to try
-    - visualize: Whether to generate visualization plots
-    - n_pca_components: Number of PCA components for clustering
+    - max_iter: Maximum MCMC iterations per substitution level (default: 10000)
+    - visualize: Whether to generate entropy distribution plots
+    - mcmc_temperature: MCMC temperature for entropy sampling (default: 1.0)
     - kim_model: KIM model name for energy filtering (None to disable)
-    - energy_percentile: Energy percentile threshold for filtering
+    - energy_percentile: Energy percentile threshold for filtering (default: 80)
     
     Returns:
-    - List of selected structures
+    - List of selected diverse structures
     """
     natom = len(atoms_origin)
     from_indices = []
@@ -640,120 +371,60 @@ def POSCAR_GEN_CLUSTER(atoms_origin, elem_from, elem_to, max_subs, max_structure
     # Loop over the number of substitutions (1 to max_subs)
     for i_C in range(max_subs):
         n_C = i_C + 1
-        print(f"Generating structures with {n_C} substitution(s)...")
+        print(f"\n{'='*70}")
+        print(f"Substitution level: {n_C} atom(s)")
+        print(f"{'='*70}")
         
-        # Track unique substitution patterns to avoid duplicates
-        generated_patterns = set()
+        # Use entropy-guided MCMC sampling to generate diverse structures
+        structures_n_C, entropies_n_C = entropy_guided_mcmc_sampling(
+            atoms_origin=atoms_origin,
+            from_indices=from_indices,
+            elem_to=elem_to,
+            n_C=n_C,
+            max_structures=max_structures,
+            n_iterations=max_iter,
+            temperature=mcmc_temperature,
+            thin=10,
+            burnin=max(1000, max_iter // 10)
+        )
         
-        # Store structures for this substitution level
-        structures_n_C = []
-        fps_n_C = []
-        types_n_C = []
+        if len(structures_n_C) == 0:
+            print(f"Warning: No structures generated for {n_C} substitution(s)")
+            continue
         
-        # For single substitution, generate all possible structures
-        if n_C == 1:
-            for idx in from_indices:
-                new_atoms = atoms_origin.copy()
-                new_atoms[idx].symbol = elem_to
-                
-                # Sort atoms
-                sorted_atoms = sort(new_atoms)
-                
-                # Calculate fingerprint
-                fp = get_fp_mat(atoms=sorted_atoms)
-                types = np.int32(read_types(sorted_atoms))
-                
-                # Store the structure
-                structures_n_C.append(sorted_atoms)
-                fps_n_C.append(fp)
-                types_n_C.append(types)
-                
-            print(f"Generated {len(structures_n_C)} structures with {n_C} substitution (all possible configurations)")
-            # No special handling for n_C=1 anymore - we always apply clustering to find symmetrically equivalent structures
-        else:
-            # Generate structures with n_C substitutions
-            for i in range(max_iter):
-                if len(structures_n_C) >= max_structures * 3:  # Generate 3x more for better diversity
-                    break
-                    
-                new_atoms = atoms_origin.copy()
-
-                # Randomly select atoms to substitute
-                subs_indices = tuple(sorted(sample(from_indices, n_C)))
-                
-                # Skip if we've already tried this pattern
-                if subs_indices in generated_patterns:
-                    continue
-                    
-                generated_patterns.add(subs_indices)
-                
-                # Apply substitution
-                for idx in subs_indices:
-                    new_atoms[idx].symbol = elem_to
-
-                # Sort atoms
-                sorted_atoms = sort(new_atoms)
-                
-                # Calculate fingerprint
-                fp = get_fp_mat(atoms=sorted_atoms)
-                types = np.int32(read_types(sorted_atoms))
-                
-                # Store the structure
-                structures_n_C.append(sorted_atoms)
-                fps_n_C.append(fp)
-                types_n_C.append(types)
-                
-            print(f"Generated {len(structures_n_C)} candidate structures with {n_C} substitution(s)")
-        
-        if len(structures_n_C) > 0:
-            # Select diverse structures using PCA-based clustering
-            min_cluster_size = 10
-            if n_C == 1 and len(structures_n_C) < 10:
-                # For very few structures with single substitution, adjust parameters
-                min_cluster_size = 5
-            
-            selected_indices = select_diverse_structures(
-                structures_n_C, fps_n_C, types_n_C, 
-                max_structures=max_structures,
-                min_cluster_size=min_cluster_size,
-                n_pca_components=n_pca_components,
-                visualize=visualize,
-                n_substitutions=n_C
+        # Apply KIM energy filtering if requested
+        if kim_model is not None and len(structures_n_C) > 1:
+            print(f"Filtering structures by KIM energy...")
+            filtered_indices, energies = filter_by_kim_energy(
+                structures_n_C,
+                kim_model, 
+                energy_percentile
             )
-            
-            print(f"Selected {len(selected_indices)} diverse structures out of {len(structures_n_C)}")
-            
-            # Apply KIM energy filtering if requested
-            if kim_model is not None and len(selected_indices) > 1:
-                print(f"Filtering selected structures by KIM energy...")
-                selected_structures = [structures_n_C[idx] for idx in selected_indices]
-                filtered_indices, energies = filter_by_kim_energy(
-                    selected_structures,
-                    kim_model, 
-                    energy_percentile
-                )
-                # Map back to original indices
-                selected_indices = [selected_indices[i] for i in filtered_indices]
-                print(f"After energy filtering: {len(selected_indices)} structures remain")
-            
-            # Write selected structures to POSCAR files
-            for i, idx in enumerate(selected_indices):
-                selected_struct = structures_n_C[idx]
-                poscar_name = f'POSCAR_{n_C}_{i+1}'
-                ase.io.write(poscar_name, selected_struct, format='vasp', direct=True, vasp5=True)
-                print(f"Wrote structure to: {poscar_name}")
-                final_structures.append(selected_struct)
+            structures_n_C = [structures_n_C[i] for i in filtered_indices]
+            entropies_n_C = [entropies_n_C[i] for i in filtered_indices]
+            print(f"After energy filtering: {len(structures_n_C)} structures remain")
+        
+        # Visualize entropy distribution if requested
+        if visualize and len(structures_n_C) > 0:
+            visualize_entropy_distribution(entropies_n_C, n_C)
+        
+        # Write selected structures to POSCAR files
+        for i, struct in enumerate(structures_n_C):
+            poscar_name = f'POSCAR_{n_C}_{i+1}'
+            ase.io.write(poscar_name, struct, format='vasp', direct=True, vasp5=True)
+            print(f"Wrote structure to: {poscar_name} (entropy={entropies_n_C[i]:.4f})")
+            final_structures.append(struct)
                 
     print(f"POSCAR_GEN_CLUSTER: Finished generating {len(final_structures)} diverse structures.")
     return final_structures
 
 def POST_PROC(caldir):
     """
-    Post-processing function - with the new approach, less work is needed here
-    since filtering is done during structure generation.
+    Post-processing function - with entropy-guided MCMC approach, filtering is done
+    during structure generation. No additional processing needed.
     """
-    print("Post-processing complete. Diverse structures have been generated.")
-    # No need to call AFLOW for filtering as it's handled by our clustering approach
+    print("Post-processing complete. Diverse structures have been generated using entropy-guided MCMC.")
+    # Structures are already diverse (high entropy) and optionally energy-filtered
 
 if __name__ == '__main__':
     caldir = './'
@@ -781,26 +452,31 @@ if __name__ == '__main__':
     max_subs = int(input())
     print("Enter the maximum number of structures per substitution: ", end="", flush=True)
     max_structures = int(input())
-    print("Enter number of PCA components (default 10): ", end="", flush=True)
-    n_pca_input = input().strip()
-    n_pca_components = int(n_pca_input) if n_pca_input else 10
+    print("Enter MCMC temperature (default 1.0, higher=more exploration): ", end="", flush=True)
+    temp_input = input().strip()
+    mcmc_temperature = float(temp_input) if temp_input else 1.0
+    print("Enter MCMC iterations per level (default 10000): ", end="", flush=True)
+    iter_input = input().strip()
+    max_iter = int(iter_input) if iter_input else 10000
     print("Use KIM energy filtering? (y/n): ", end="", flush=True)
     use_kim = input().lower() in ['y', 'yes']
     kim_model = "Tersoff_LAMMPS_Tersoff_1989_SiGe__MO_350526375143_004" if use_kim else None
-    print("Generate visualization plots? (y/n): ", end="", flush=True)
+    print("Generate entropy distribution plots? (y/n): ", end="", flush=True)
     vis_input = input().lower()
     visualize = vis_input == 'y' or vis_input == 'yes'
     
     if visualize:
-        print("Visualization enabled - plots will be generated")
+        print("Entropy distribution plots will be generated")
     
     if kim_model:
         print(f"KIM energy filtering enabled using model: {kim_model}")
     
-    # Generate structures using the new PCA-based clustering approach
+    print(f"MCMC parameters: temperature={mcmc_temperature}, iterations={max_iter}")
+    
+    # Generate structures using entropy-guided MCMC approach
     POSCAR_GEN_CLUSTER(atoms_origin, elem_from, elem_to, max_subs, max_structures, 
-                       visualize=visualize, n_pca_components=n_pca_components, 
-                       kim_model=kim_model)
+                       max_iter=max_iter, visualize=visualize, 
+                       mcmc_temperature=mcmc_temperature, kim_model=kim_model)
 
     # Call post-processing function
     print("All substitutions complete. Starting post-processing...")
